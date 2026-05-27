@@ -1,16 +1,19 @@
 [package]
 name = "keymap-config"
-version = "0.0.0"
+version.workspace = true
 description = "Load keymap-rs bindings from TOML, with conflict detection"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
-keymap-core = { path = "../keymap-core" }
-keymap-seq = { path = "../keymap-seq" }
+keymap-core = { path = "../keymap-core", version = "0.1.0" }
+keymap-seq = { path = "../keymap-seq", version = "0.1.0" }
 serde = { workspace = true }
 toml = { workspace = true }
 
@@ -18,7 +21,7 @@ toml = { workspace = true }
 # with live `decode` of captured terminal bytes — a dev-only dependency, so it
 # does not appear in `keymap-config`'s published dependency graph.
 [dev-dependencies]
-keymap-term = { path = "../keymap-term" }
+keymap-term = { path = "../keymap-term", version = "0.1.0" }
 
 [lints]
 workspace = true

@@ -1,12 +1,15 @@
 [package]
 name = "keymap-core"
-version = "0.0.0"
+version.workspace = true
 description = "Environment-aware keymap resolution core for terminal UIs"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 crossterm = { workspace = true, optional = true }

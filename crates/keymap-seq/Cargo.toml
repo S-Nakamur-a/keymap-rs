@@ -1,15 +1,18 @@
 [package]
 name = "keymap-seq"
-version = "0.0.0"
+version.workspace = true
 description = "Multi-key sequence resolution for keymap-rs (leader keys, C-x C-s)"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
-keymap-core = { path = "../keymap-core" }
+keymap-core = { path = "../keymap-core", version = "0.1.0" }
 
 [lints]
 workspace = true

@@ -10,11 +10,15 @@ members = [
 ]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/S-Nakamur-a/keymap-rs"
 authors = ["S-Nakamur-a"]
+readme = "README.md"
+keywords = ["keymap", "keybinding", "terminal", "tui", "input"]
+categories = ["command-line-interface", "data-structures"]
 
 [workspace.dependencies]
 # Pinned in one place so keymap-core and keymap-term agree on the version.

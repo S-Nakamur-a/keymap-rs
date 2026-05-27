@@ -1,15 +1,18 @@
 [package]
 name = "keymap-term"
-version = "0.0.0"
+version.workspace = true
 description = "Terminal capability snapshots and (future) capability-aware key decoding for keymap-rs"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
-keymap-core = { path = "../keymap-core" }
+keymap-core = { path = "../keymap-core", version = "0.1.0" }
 serde = { workspace = true }
 toml = { workspace = true }
 
