@@ -1,0 +1,23 @@
+[package]
+name = "keymap-core"
+version = "0.0.0"
+description = "Environment-aware keymap resolution core for terminal UIs"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+crossterm = { workspace = true, optional = true }
+
+[features]
+# `default` carries no terminal-backend dependency: the core is pure data + lookup.
+default = []
+# Enables `TryFrom<crossterm::event::KeyEvent> for KeyInput`. The crossterm type
+# only appears in the public API when this feature is on, so a crossterm major
+# bump is not automatically a keymap-core major bump for default builds.
+crossterm = ["dep:crossterm"]
+
+[lints]
+workspace = true

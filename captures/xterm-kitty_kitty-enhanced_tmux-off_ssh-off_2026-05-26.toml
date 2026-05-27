@@ -1,0 +1,168 @@
+[meta]
+captured_at = "2026-05-26T20:39:45.131271Z"
+harness_version = "0.0.0"
+term = "xterm-kitty"
+tmux = false
+ssh = false
+
+[[capability]]
+name = "kitty_keyboard_protocol"
+value = "supported"
+provenance = "query_response"
+raw_response = [
+    "1b",
+    "5b",
+    "3f",
+    "30",
+    "75",
+    "1b",
+    "5b",
+    "3f",
+    "36",
+    "32",
+    "3b",
+    "35",
+    "32",
+    "3b",
+    "63",
+]
+
+[[keypress]]
+intended = "ctrl+a"
+mode = "kitty-enhanced"
+raw_bytes = [
+    "1b",
+    "5b",
+    "39",
+    "37",
+    "3b",
+    "35",
+    "75",
+]
+read_chunks = [7]
+expected_key = "Char('a')"
+expected_mods = ["CTRL"]
+
+[[keypress]]
+intended = "cmd+1"
+mode = "kitty-enhanced"
+raw_bytes = []
+expected_key = "Char('1')"
+expected_mods = ["SUPER"]
+
+[[keypress]]
+intended = "alt+a"
+mode = "kitty-enhanced"
+raw_bytes = [
+    "c3",
+    "a5",
+]
+read_chunks = [2]
+expected_key = "Char('a')"
+expected_mods = ["ALT"]
+
+[[keypress]]
+intended = "ctrl+i"
+mode = "kitty-enhanced"
+raw_bytes = [
+    "1b",
+    "5b",
+    "31",
+    "30",
+    "35",
+    "3b",
+    "35",
+    "75",
+]
+read_chunks = [8]
+expected_key = "Char('i')"
+expected_mods = ["CTRL"]
+
+[[keypress]]
+intended = "shift+tab"
+mode = "kitty-enhanced"
+raw_bytes = [
+    "1b",
+    "5b",
+    "39",
+    "3b",
+    "32",
+    "75",
+]
+read_chunks = [6]
+expected_key = "Tab"
+expected_mods = ["SHIFT"]
+
+[[keypress]]
+intended = "f1"
+mode = "kitty-enhanced"
+raw_bytes = [
+    "1b",
+    "5b",
+    "50",
+]
+read_chunks = [3]
+expected_key = "F(1)"
+expected_mods = []
+
+[[keypress]]
+intended = "up"
+mode = "kitty-enhanced"
+raw_bytes = [
+    "1b",
+    "5b",
+    "41",
+]
+read_chunks = [3]
+expected_key = "Up"
+expected_mods = []
+
+[[keypress]]
+intended = "down"
+mode = "kitty-enhanced"
+raw_bytes = [
+    "1b",
+    "5b",
+    "42",
+]
+read_chunks = [3]
+expected_key = "Down"
+expected_mods = []
+
+[[keypress]]
+intended = "left"
+mode = "kitty-enhanced"
+raw_bytes = [
+    "1b",
+    "5b",
+    "44",
+]
+read_chunks = [3]
+expected_key = "Left"
+expected_mods = []
+
+[[keypress]]
+intended = "right"
+mode = "kitty-enhanced"
+raw_bytes = [
+    "1b",
+    "5b",
+    "43",
+]
+read_chunks = [3]
+expected_key = "Right"
+expected_mods = []
+
+[[keypress]]
+intended = "esc"
+mode = "kitty-enhanced"
+raw_bytes = [
+    "1b",
+    "5b",
+    "32",
+    "37",
+    "75",
+]
+read_chunks = [5]
+expected_key = "Esc"
+expected_mods = []

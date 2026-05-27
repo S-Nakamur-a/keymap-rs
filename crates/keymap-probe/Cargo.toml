@@ -1,0 +1,21 @@
+[package]
+name = "keymap-probe"
+version = "0.0.0"
+description = "Interactive terminal key/capability recorder for keymap-rs (development tool)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+keymap-core = { path = "../keymap-core" }
+keymap-term = { path = "../keymap-term" }
+crossterm = { workspace = true }
+rustix = { workspace = true }
+time = { workspace = true }
+toml = { workspace = true }
+
+[lints]
+workspace = true

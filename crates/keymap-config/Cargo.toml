@@ -1,0 +1,24 @@
+[package]
+name = "keymap-config"
+version = "0.0.0"
+description = "Load keymap-rs bindings from TOML, with conflict detection"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+keymap-core = { path = "../keymap-core" }
+keymap-seq = { path = "../keymap-seq" }
+serde = { workspace = true }
+toml = { workspace = true }
+
+# The `rebind` example demonstrates the full runtime-rebind flow, which starts
+# with live `decode` of captured terminal bytes — a dev-only dependency, so it
+# does not appear in `keymap-config`'s published dependency graph.
+[dev-dependencies]
+keymap-term = { path = "../keymap-term" }
+
+[lints]
+workspace = true

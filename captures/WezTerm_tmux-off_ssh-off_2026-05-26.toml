@@ -1,0 +1,145 @@
+[meta]
+captured_at = "2026-05-26T16:25:52.112088Z"
+harness_version = "0.0.0"
+term = "xterm-256color"
+term_program = "WezTerm"
+term_program_version = "20240203-110809-5046fc22"
+tmux = false
+ssh = false
+
+[[capability]]
+name = "kitty_keyboard_protocol"
+value = "unsupported"
+provenance = "query_response"
+raw_response = [
+    "1b",
+    "5b",
+    "3f",
+    "36",
+    "35",
+    "3b",
+    "34",
+    "3b",
+    "36",
+    "3b",
+    "31",
+    "38",
+    "3b",
+    "32",
+    "32",
+    "63",
+]
+
+[[keypress]]
+intended = "ctrl+a"
+mode = "baseline"
+raw_bytes = ["01"]
+read_chunks = [1]
+expected_key = "Char('a')"
+expected_mods = ["CTRL"]
+
+[[keypress]]
+intended = "cmd+1"
+mode = "baseline"
+raw_bytes = []
+expected_key = "Char('1')"
+expected_mods = ["SUPER"]
+
+[[keypress]]
+intended = "alt+a"
+mode = "baseline"
+raw_bytes = [
+    "1b",
+    "61",
+]
+read_chunks = [2]
+expected_key = "Char('a')"
+expected_mods = ["ALT"]
+
+[[keypress]]
+intended = "ctrl+i"
+mode = "baseline"
+raw_bytes = ["09"]
+read_chunks = [1]
+expected_key = "Char('i')"
+expected_mods = ["CTRL"]
+
+[[keypress]]
+intended = "shift+tab"
+mode = "baseline"
+raw_bytes = [
+    "1b",
+    "5b",
+    "5a",
+]
+read_chunks = [3]
+expected_key = "Tab"
+expected_mods = ["SHIFT"]
+
+[[keypress]]
+intended = "f1"
+mode = "baseline"
+raw_bytes = [
+    "1b",
+    "4f",
+    "50",
+]
+read_chunks = [3]
+expected_key = "F(1)"
+expected_mods = []
+
+[[keypress]]
+intended = "up"
+mode = "baseline"
+raw_bytes = [
+    "1b",
+    "5b",
+    "41",
+]
+read_chunks = [3]
+expected_key = "Up"
+expected_mods = []
+
+[[keypress]]
+intended = "down"
+mode = "baseline"
+raw_bytes = [
+    "1b",
+    "5b",
+    "42",
+]
+read_chunks = [3]
+expected_key = "Down"
+expected_mods = []
+
+[[keypress]]
+intended = "left"
+mode = "baseline"
+raw_bytes = [
+    "1b",
+    "5b",
+    "44",
+]
+read_chunks = [3]
+expected_key = "Left"
+expected_mods = []
+
+[[keypress]]
+intended = "right"
+mode = "baseline"
+raw_bytes = [
+    "1b",
+    "5b",
+    "43",
+]
+read_chunks = [3]
+expected_key = "Right"
+expected_mods = []
+
+[[keypress]]
+intended = "esc"
+mode = "baseline"
+raw_bytes = ["1b"]
+read_chunks = [1]
+expected_key = "Esc"
+expected_mods = []

@@ -1,0 +1,19 @@
+[package]
+name = "keymap-tui"
+version = "0.0.0"
+description = "Interactive TUI to inspect keymap-rs decoding/resolution on a real terminal (dev tool)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+keymap-core = { path = "../keymap-core", features = ["crossterm"] }
+keymap-config = { path = "../keymap-config" }
+crossterm = { workspace = true }
+ratatui = { workspace = true }
+
+[lints]
+workspace = true
