@@ -20,6 +20,14 @@
 //! for one [`Capture`] it enumerates which recorded chords actually arrive as
 //! themselves (the empirical refinement of `keymap_core::legacy_form`'s static
 //! lower bound). This crate carries no terminal-I/O dependencies.
+//!
+//! ## Headless verification
+//!
+//! There is no `examples/` directory for this crate; the decoder is verified
+//! against the committed `captures/*.toml` fixtures by `tests/decode_fixtures.rs`,
+//! `tests/capture_invariants.rs`, and `tests/reachability_fixtures.rs`
+//! (`cargo test -p keymap-term`). New decoder behaviour is added by extending
+//! the captures, not by writing speculative byte shapes.
 
 mod decode;
 mod reachability;

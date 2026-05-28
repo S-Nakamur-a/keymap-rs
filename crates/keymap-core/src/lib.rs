@@ -38,6 +38,15 @@
 //! `keymap-seq`). [`Resolution`] is deliberately *exhaustive* (its three
 //! dispositions are the complete set), so unlike most public types here it is not
 //! `#[non_exhaustive]` — see its docs.
+//!
+//! ## Runnable examples
+//!
+//! Each scenario above has a runnable counterpart under
+//! [`examples/`](https://github.com/S-Nakamur-a/keymap-rs/tree/main/crates/keymap-core/examples):
+//! `basic_lookup`, `modal_keymap`, `discovery`, `ex_command`. Run e.g.
+//! `cargo run -p keymap-core --example modal_keymap`. The examples are
+//! exercised by `cargo test --workspace`, so they cannot silently drift from
+//! the API.
 
 mod input;
 mod keymap;

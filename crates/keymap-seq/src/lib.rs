@@ -60,6 +60,12 @@
 //! }
 //! ```
 //!
+//! ## Runnable example
+//!
+//! `cargo run -p keymap-seq --example leader_sequence` runs the
+//! buffer-and-flush loop above, including a timed `jj`-style window demo
+//! ([source](https://github.com/S-Nakamur-a/keymap-rs/tree/main/crates/keymap-seq/examples/leader_sequence.rs)).
+//!
 //! [`keymap-core`]: keymap_core
 
 mod map;

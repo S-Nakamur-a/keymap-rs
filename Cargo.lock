@@ -266,6 +266,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "keymap-suite"
+version = "0.0.0"
+
+[[package]]
 name = "keymap-term"
 version = "0.1.0"
 dependencies = [

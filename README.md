@@ -2,6 +2,8 @@
 
 A Cargo workspace of small Rust crates that turn key presses into your own action type and nothing more.
 
+**Who this is for.** Authors of terminal UIs, modal editors, leader-key apps, PTY hosts, and terminal multiplexers who want their keymap to be configurable, conflict-aware, and (with `keymap-term`) able to recover keypresses from raw terminal bytes. Find your case in [The crate map](#the-crate-map); for the most common one — "bind keys to an action enum in a TUI" — `keymap-core` on its own is enough.
+
 `keymap-rs` is state-free by contract: every library crate is a pure function of its inputs, so you keep the mode, the pending-key buffer, and the clock, and a lookup miss (`None`) is the signal to pass the key through. This document covers the one architectural rule, which of the four crates to depend on, the exact call shape for lookup / layered resolve / sequences / config load, and the commands to build and verify locally.
 
 - [What it is, and the one rule](#what-it-is-and-the-one-rule)
@@ -28,14 +30,14 @@ The design grew from four recurring pains in terminal UI work: configurable bind
 
 ## The crate map
 
-Depend only on the crate you need; the three satellites all build on `keymap-core`, and the `crossterm` feature on the core is optional.
+Depend only on the crate you need; the three satellites all build on `keymap-core`, and the `crossterm` feature on the core is optional. The rows below are ordered by how often a typical caller reaches for them — the first row is enough for most TUI authors.
 
-| Crate | Role | Key types and functions |
-| --- | --- | --- |
-| `keymap-core` | The pure foundation: neutral key vocabulary and lookup. | `Key`, `Modifiers`, `KeyInput`, `Keymap<A>`, `resolve_layered`, `resolve_passthrough`, `legacy_lints` |
-| `keymap-config` | Parses a TOML `[keys]` table, `[layers.<name>]` tables, and `[[sequences]]` array into named layers, resolving action names via a caller closure. | `from_str`, `BuildOutput<A>`, `Warning`, `to_toml`, `to_toml_layered` |
-| `keymap-seq` | Prefix-free multi-key sequences (leader keys, `ctrl+x ctrl+s`). | `SequenceKeymap<A>`, `Match`, `Continuation`, `SeqBindError` |
-| `keymap-term` | The `Capture` schema, a lossless hex codec, and capability-aware byte decoding. | `decode`, `Decoded`, `DecodeMode`, `reachability`, `Reachability` |
+| When you want to… | Crate | Role | Key types and functions |
+| --- | --- | --- | --- |
+| **Bind keys to your action enum in a TUI** (the common case) | `keymap-core` | Neutral key vocabulary and a generic `Keymap<A>` lookup table. State-free; a miss is *pass through*. Optional `crossterm` feature for `TryFrom<KeyEvent>`. | `Key`, `Modifiers`, `KeyInput`, `Keymap<A>`, `resolve_layered`, `resolve_passthrough`, `legacy_lints` |
+| **Load those bindings from a TOML file** (with conflicts as warnings, not errors) | `keymap-config` | TOML `[keys]` / `[layers.<name>]` / `[[sequences]]` → named-layer keymap + sequence keymap; resolves action names via a caller-supplied closure. Round-trippable. | `from_str`, `BuildOutput<A>`, `Warning`, `to_toml`, `to_toml_layered` |
+| **Bind multi-key sequences** (`ctrl+x ctrl+s`, leader trees, vim-style) | `keymap-seq` | Prefix-free multi-chord trie; the pending buffer and any inter-key timeout live caller-side. | `SequenceKeymap<A>`, `Match`, `Continuation`, `SeqBindError` |
+| **Recover `KeyInput` from raw terminal bytes** (PTY host, terminal multiplexer) | `keymap-term` | Measurement-first byte decoder built from committed `captures/*.toml` fixtures rather than assumptions — the package's strongest differentiator. | `decode`, `Decoded`, `DecodeMode`, `reachability`, `Reachability` |
 
 > [!NOTE]
 > `keymap-probe` and `keymap-tui` are dev tools, not library API. They read keystrokes interactively and must run in a real terminal, so they cannot run headless or in CI. Nothing depends on them.
@@ -249,4 +251,4 @@ The optional `crossterm` backend adds `TryFrom<crossterm::event::KeyEvent> for K
 cargo test -p keymap-core --features crossterm
 ```
 
-These crates are version `0.0.0` and are not published to crates.io, so there is no `keymap-core = "x.y"` line to add. Depend on them by path or git instead. The workspace targets edition 2024 with a minimum supported Rust version of 1.85.
+From the first crates.io release (`0.1.0`), depend on each crate by name — for example `keymap-core = "0.1"`. Under Cargo's pre-1.0 SemVer interpretation, a MINOR bump is breaking, so `^0.1` will not auto-upgrade to `0.2`; each per-crate `CHANGELOG.md` records what changed. Until that first release lands, depend by path or git. The workspace targets edition 2024 with a minimum supported Rust version of 1.85.

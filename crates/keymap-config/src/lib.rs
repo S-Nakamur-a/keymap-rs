@@ -89,6 +89,13 @@
 //! with `j`) is reported as the advisory [`Warning::SequenceShadow`] — both
 //! bindings are kept (they live in separate maps), so it only flags that the
 //! caller composing the two maps must resolve the overlap with a timeout.
+//!
+//! ## Runnable examples
+//!
+//! Under [`examples/`](https://github.com/S-Nakamur-a/keymap-rs/tree/main/crates/keymap-config/examples):
+//! `cargo run -p keymap-config --example load_config` walks the TOML-to-keymap
+//! pipeline end to end, and `--example rebind` shows the runtime-rebind flow
+//! on top of `keymap_term::decode`.
 
 use std::collections::{BTreeMap, HashMap};
 

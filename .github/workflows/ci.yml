@@ -34,3 +34,22 @@ jobs:
       # committed captures/*.toml fixtures; the rest are pure logic.
       - name: Test
         run: cargo test --workspace
+
+  semver-checks:
+    name: cargo-semver-checks
+    runs-on: ubuntu-latest
+    # Disabled by default until the first crates.io publish: cargo-semver-checks
+    # needs a baseline version on crates.io to diff against, and there is none
+    # yet. After the 0.1.0 publish, switch the condition to
+    # `if: github.event_name == 'pull_request'` to gate every PR against the
+    # last released API.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - name: Check semver
+        run: cargo semver-checks check-release --workspace

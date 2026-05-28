@@ -7,6 +7,8 @@ members = [
     "crates/keymap-term",
     "crates/keymap-probe",
     "crates/keymap-tui",
+    # Name-reservation placeholder; see docs/STATUS.md "Packaging retreat".
+    "crates/keymap-suite",
 ]
 
 [workspace.package]

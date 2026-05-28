@@ -1,0 +1,23 @@
+[package]
+name = "keymap-suite"
+# Placeholder version: `0.0.0` is the conventional signal on crates.io that the
+# crate currently holds the name and nothing else. Do not derive this from
+# `workspace.package.version` (which tracks the real 0.x release line of the
+# other crates) — that would accidentally promote this placeholder into the
+# release stream the moment someone bumps the workspace version.
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Reserved crate name. A future facade over keymap-core / keymap-config / keymap-seq / keymap-term will live here if the four-crate split is ever folded back into a single feature-gated crate (see docs/STATUS.md, 'Packaging retreat'). Today this crate exports no API."
+keywords = ["keymap", "placeholder"]
+categories = ["command-line-interface"]
+# Inheriting the workspace README would publish the multi-crate guide under
+# this placeholder's name on crates.io, which is exactly the misdirection the
+# placeholder is trying to *avoid*. Point at this crate's own README instead.
+readme = "README.md"
+
+[lints]
+workspace = true
