@@ -5,10 +5,9 @@ All notable changes to `keymap-term` are recorded here. The format follows
 [Cargo pre-1.0 SemVer interpretation](https://doc.rust-lang.org/cargo/reference/semver.html)
 (`0.MINOR.PATCH`, where a MINOR bump is breaking).
 
-> When cutting `0.1.0`, move the entries below under a new
-> `## [0.1.0] - YYYY-MM-DD` heading and reset `[Unreleased]` to empty.
-
 ## [Unreleased]
+
+## [0.1.0] - 2026-05-28
 
 ### Added
 
@@ -29,3 +28,4 @@ All notable changes to `keymap-term` are recorded here. The format follows
   lower bound. Absence from the returned list is itself the "no evidence" case.
 
 [Unreleased]: https://github.com/S-Nakamur-a/keymap-rs/commits/main
+[0.1.0]: https://crates.io/crates/keymap-term/0.1.0
