@@ -30,43 +30,76 @@ keymap-suite = "0.1"
 ```rust
 use keymap_suite::prelude::*;
 
+// 1. YOU define the actions, and how their config *names* map to them.
 #[derive(Clone, Debug, PartialEq)]
-enum Action { Quit, Save, SplitPane }
+enum Action { Save, CommandPalette, OpenFile }
 
 fn resolve(name: &str) -> Option<Action> {
     match name {
-        "quit" => Some(Action::Quit),
-        "save" => Some(Action::Save),
-        "split_pane" => Some(Action::SplitPane),
+        "save"            => Some(Action::Save),
+        "command_palette" => Some(Action::CommandPalette),
+        "open_file"       => Some(Action::OpenFile),
         _ => None,
     }
 }
 
-// Lenient by default (warnings are collected, not fatal). For a CI / production
-// startup gate, add `.deny_warnings()?` here to fail on any warning.
-let loaded = keymap_suite::from_toml_str(SETTINGS, resolve)?;
+// 2. YOU bring the bindings as TOML (from a file, or inline). `[keys]` is the
+//    always-on "global" layer; each `[layers.<name>]` is a layer YOU switch on
+//    when your UI is in that context.
+const SETTINGS: &str = r#"
+[keys]
+"ctrl+s" = "save"
+"ctrl+p" = "command_palette"
 
-// 1. Resolve a key. The active layer chain is *yours* — assembled from your
-//    own UI state (which panel is focused, is a popup open) per event. The
-//    minimal case is one layer, `[loaded.global()]`, which costs you nothing.
-let chain = [loaded.global()];
+[layers.panel]
+"ctrl+p" = "open_file"          # shadows the global ctrl+p *while the panel is focused*
+
+[[sequences]]
+keys   = ["ctrl+x", "ctrl+s"]   # a multi-key sequence
+action = "save"
+"#;
+
+// 3. The LIBRARY parses that into named layers + a sequence table.
+let loaded = keymap_suite::from_toml_str(SETTINGS, resolve)?;
+//  (Lenient by default; add `.deny_warnings()?` here to fail on conflicts/typos.)
+
+// 4. Per key event, YOU pick which layers are active from your own state, and
+//    the library resolves against that chain (earlier layers win). This is how
+//    "ctrl+p means OpenFile, but only when the panel is focused" is expressed:
+let key = chords::ctrl('p');               // normally KeyInput::try_from(a crossterm KeyEvent)
+let panel_focused = true;                  // ← your application state, not the library's
+let chain = if panel_focused {
+    vec![&loaded.layers["panel"], loaded.global()] // panel wins: ctrl+p -> OpenFile
+} else {
+    vec![loaded.global()]                          // global only:  ctrl+p -> CommandPalette
+};
 if let Some(action) = resolve_layered(chain.iter().copied(), &key) {
     // run `action`
 }
 
-// 2. Multi-key sequences: you own the pending buffer; the suite does the trie.
+// 5. Multi-key sequences: the library owns the trie, YOU own the pending buffer
+//    and the inter-key timer.
 let mut pending = loaded.pending_sequence();
 match pending.feed(&loaded.sequences, key) {
     Step::Fired(action)         => { /* run it */ }
     Step::Pending               => { /* (re)start your idle timer */ }
-    Step::PassThrough(literals) => { /* forward these keys */ }
+    Step::PassThrough(literals) => { /* forward these keys downstream */ }
 }
 
-// 3. Help screen / which-key: ask the reverse question.
+// 6. Help screen / which-key: the reverse of resolution — which keys run this?
 let save_keys = keys_for_action(loaded.global(), &Action::Save); // Vec<&KeyInput>
 ```
 
-**What the suite gives you, and what stays yours.** The suite owns the *mechanical* glue: parsing TOML into named layers, the prefix-free sequence trie and its pending buffer, reverse lookup for help. You keep the *domain* state, because only your app knows it: **which layers are active right now** (your mode / focus / popup) and **the inter-key timer** that decides a half-typed sequence was abandoned. This split is deliberate — see [the one rule](#what-it-is-and-the-one-rule). For the full walkthrough see the [`keymap-suite` README](crates/keymap-suite/README.md) and `cargo run -p keymap-suite --example load_and_resolve`.
+**You define / the library does.**
+
+| You define | The library does |
+| --- | --- |
+| The `Action` enum and the `resolve` name→action closure | Parse the TOML into named layers + a sequence table |
+| The TOML bindings (`[keys]`, `[layers.*]`, `[[sequences]]`) | Resolve a key against the layer chain you hand it (first hit wins) |
+| **Which layers are active this event** (focus / mode / popup) | Run the prefix-free sequence trie over your pending buffer |
+| The inter-key timer that abandons a half-typed sequence | Reverse-lookup `keys_for_action` for your help screen |
+
+The library never holds your mode or a clock — that is [the one rule](#what-it-is-and-the-one-rule). So a *single-chord* binding can be per-layer (the `ctrl+p` override above), but note that **multi-key sequences are global today** (`loaded.sequences` is one table, not per-layer): to scope a *sequence* to a context, gate it caller-side with the same focus check you already use for the layer chain. For the full walkthrough see the [`keymap-suite` README](crates/keymap-suite/README.md) and `cargo run -p keymap-suite --example load_and_resolve`.
 
 ## What it is, and the one rule
 
