@@ -2,10 +2,11 @@
 
 A Cargo workspace of small Rust crates that turn key presses into your own action type and nothing more.
 
-**Who this is for.** Authors of terminal UIs, modal editors, leader-key apps, PTY hosts, and terminal multiplexers who want their keymap to be configurable, conflict-aware, and (with `keymap-term`) able to recover keypresses from raw terminal bytes. Find your case in [The crate map](#the-crate-map); for the most common one — "bind keys to an action enum in a TUI" — `keymap-core` on its own is enough.
+**Who this is for.** Authors of terminal UIs, modal editors, leader-key apps, PTY hosts, and terminal multiplexers who want their keymap to be configurable, conflict-aware, discoverable, and (with `keymap-term`) able to recover keypresses from raw terminal bytes.
 
-`keymap-rs` is state-free by contract: every library crate is a pure function of its inputs, so you keep the mode, the pending-key buffer, and the clock, and a lookup miss (`None`) is the signal to pass the key through. This document covers the one architectural rule, which of the four crates to depend on, the exact call shape for lookup / layered resolve / sequences / config load, and the commands to build and verify locally.
+**Most people should start with [`keymap-suite`](#start-here-keymap-suite)** — the one-import facade that bundles loading, layered resolution, multi-key sequences, and help-screen discovery for the nine-out-of-ten TUI case. Reach for the individual foundation crates only when you need to drop a level lower (your own backend, raw-byte decoding, empirical reachability).
 
+- [Start here: `keymap-suite`](#start-here-keymap-suite)
 - [What it is, and the one rule](#what-it-is-and-the-one-rule)
 - [The crate map](#the-crate-map)
 - [Lookup: a miss is "pass through"](#lookup-a-miss-is-pass-through)
@@ -14,6 +15,91 @@ A Cargo workspace of small Rust crates that turn key presses into your own actio
 - [Config: TOML in, warnings out](#config-toml-in-warnings-out)
 - [The measurement-first capability layer](#the-measurement-first-capability-layer)
 - [Build, test, and add it to your project](#build-test-and-add-it-to-your-project)
+
+## Start here: `keymap-suite`
+
+If you are building a TUI and want keybindings that load from a TOML file, resolve per context, support `ctrl+x ctrl+s`-style sequences, and feed a help screen — add one crate and import its prelude:
+
+```toml
+[dependencies]
+keymap-suite = "0.1"
+# Reading events through crossterm? Turn on the adapter:
+# keymap-suite = { version = "0.1", features = ["crossterm"] }
+```
+
+```rust
+use keymap_suite::prelude::*;
+
+// 1. YOU define the actions, and how their config *names* map to them.
+#[derive(Clone, Debug, PartialEq)]
+enum Action { Save, CommandPalette, OpenFile }
+
+fn resolve(name: &str) -> Option<Action> {
+    match name {
+        "save"            => Some(Action::Save),
+        "command_palette" => Some(Action::CommandPalette),
+        "open_file"       => Some(Action::OpenFile),
+        _ => None,
+    }
+}
+
+// 2. YOU bring the bindings as TOML (from a file, or inline). `[keys]` is the
+//    always-on "global" layer; each `[layers.<name>]` is a layer YOU switch on
+//    when your UI is in that context.
+const SETTINGS: &str = r#"
+[keys]
+"ctrl+s" = "save"
+"ctrl+p" = "command_palette"
+
+[layers.panel]
+"ctrl+p" = "open_file"          # shadows the global ctrl+p *while the panel is focused*
+
+[[sequences]]
+keys   = ["ctrl+x", "ctrl+s"]   # a multi-key sequence
+action = "save"
+"#;
+
+// 3. The LIBRARY parses that into named layers + a sequence table.
+let loaded = keymap_suite::from_toml_str(SETTINGS, resolve)?;
+//  (Lenient by default; add `.deny_warnings()?` here to fail on conflicts/typos.)
+
+// 4. Per key event, YOU pick which layers are active from your own state, and
+//    the library resolves against that chain (earlier layers win). This is how
+//    "ctrl+p means OpenFile, but only when the panel is focused" is expressed:
+let key = chords::ctrl('p');               // normally KeyInput::try_from(a crossterm KeyEvent)
+let panel_focused = true;                  // ← your application state, not the library's
+let chain = if panel_focused {
+    vec![&loaded.layers["panel"], loaded.global()] // panel wins: ctrl+p -> OpenFile
+} else {
+    vec![loaded.global()]                          // global only:  ctrl+p -> CommandPalette
+};
+if let Some(action) = resolve_layered(chain.iter().copied(), &key) {
+    // run `action`
+}
+
+// 5. Multi-key sequences: the library owns the trie, YOU own the pending buffer
+//    and the inter-key timer.
+let mut pending = loaded.pending_sequence();
+match pending.feed(&loaded.sequences, key) {
+    Step::Fired(action)         => { /* run it */ }
+    Step::Pending               => { /* (re)start your idle timer */ }
+    Step::PassThrough(literals) => { /* forward these keys downstream */ }
+}
+
+// 6. Help screen / which-key: the reverse of resolution — which keys run this?
+let save_keys = keys_for_action(loaded.global(), &Action::Save); // Vec<&KeyInput>
+```
+
+**You define / the library does.**
+
+| You define | The library does |
+| --- | --- |
+| The `Action` enum and the `resolve` name→action closure | Parse the TOML into named layers + a sequence table |
+| The TOML bindings (`[keys]`, `[layers.*]`, `[[sequences]]`) | Resolve a key against the layer chain you hand it (first hit wins) |
+| **Which layers are active this event** (focus / mode / popup) | Run the prefix-free sequence trie over your pending buffer |
+| The inter-key timer that abandons a half-typed sequence | Reverse-lookup `keys_for_action` for your help screen |
+
+The library never holds your mode or a clock — that is [the one rule](#what-it-is-and-the-one-rule). So a *single-chord* binding can be per-layer (the `ctrl+p` override above), but note that **multi-key sequences are global today** (`loaded.sequences` is one table, not per-layer): to scope a *sequence* to a context, gate it caller-side with the same focus check you already use for the layer chain. For the full walkthrough see the [`keymap-suite` README](crates/keymap-suite/README.md) and `cargo run -p keymap-suite --example load_and_resolve`.
 
 ## What it is, and the one rule
 
@@ -30,11 +116,14 @@ The design grew from four recurring pains in terminal UI work: configurable bind
 
 ## The crate map
 
-Depend only on the crate you need; the three satellites all build on `keymap-core`, and the `crossterm` feature on the core is optional. The rows below are ordered by how often a typical caller reaches for them — the first row is enough for most TUI authors.
+> Most readers can skip this — it is for picking a *single foundation crate* when the [`keymap-suite`](#start-here-keymap-suite) facade is more than you need. If in doubt, use the suite.
+
+The foundation crates all build on `keymap-core`, and the `crossterm` feature on the core is optional. The rows below are ordered by how often a typical caller reaches for them.
 
 | When you want to… | Crate | Role | Key types and functions |
 | --- | --- | --- | --- |
-| **Bind keys to your action enum in a TUI** (the common case) | `keymap-core` | Neutral key vocabulary and a generic `Keymap<A>` lookup table. State-free; a miss is *pass through*. Optional `crossterm` feature for `TryFrom<KeyEvent>`. | `Key`, `Modifiers`, `KeyInput`, `Keymap<A>`, `resolve_layered`, `resolve_passthrough`, `legacy_lints` |
+| **Everything below, in one import** (the common case) | [`keymap-suite`](crates/keymap-suite/README.md) | The facade: TOML load + layered resolve + sequences + discovery + terse chord constructors, with a `prelude`. Optional `crossterm` feature. | `from_toml_str`, `from_toml_path`, `Loaded`, `keys_for_action`, `chords`, `prelude`, `LoadError` |
+| **Bind keys to your action enum in a TUI** | `keymap-core` | Neutral key vocabulary and a generic `Keymap<A>` lookup table. State-free; a miss is *pass through*. Optional `crossterm` feature for `TryFrom<KeyEvent>`. | `Key`, `Modifiers`, `KeyInput`, `Keymap<A>`, `resolve_layered`, `resolve_passthrough`, `legacy_lints` |
 | **Load those bindings from a TOML file** (with conflicts as warnings, not errors) | `keymap-config` | TOML `[keys]` / `[layers.<name>]` / `[[sequences]]` → named-layer keymap + sequence keymap; resolves action names via a caller-supplied closure. Round-trippable. | `from_str`, `BuildOutput<A>`, `Warning`, `to_toml`, `to_toml_layered` |
 | **Bind multi-key sequences** (`ctrl+x ctrl+s`, leader trees, vim-style) | `keymap-seq` | Prefix-free multi-chord trie; the pending buffer and any inter-key timeout live caller-side. | `SequenceKeymap<A>`, `Match`, `Continuation`, `SeqBindError` |
 | **Recover `KeyInput` from raw terminal bytes** (PTY host, terminal multiplexer) | `keymap-term` | Measurement-first byte decoder built from committed `captures/*.toml` fixtures rather than assumptions — the package's strongest differentiator. | `decode`, `Decoded`, `DecodeMode`, `reachability`, `Reachability` |

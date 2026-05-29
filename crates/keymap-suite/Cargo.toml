@@ -1,23 +1,42 @@
 [package]
 name = "keymap-suite"
-# Placeholder version: `0.0.0` is the conventional signal on crates.io that the
-# crate currently holds the name and nothing else. Do not derive this from
-# `workspace.package.version` (which tracks the real 0.x release line of the
-# other crates) — that would accidentally promote this placeholder into the
-# release stream the moment someone bumps the workspace version.
-version = "0.0.0"
+# Promoted from the 0.0.0 name-reservation placeholder to the first real release.
+# Tracks the workspace version line going forward.
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Reserved crate name. A future facade over keymap-core / keymap-config / keymap-seq / keymap-term will live here if the four-crate split is ever folded back into a single feature-gated crate (see docs/STATUS.md, 'Packaging retreat'). Today this crate exports no API."
-keywords = ["keymap", "placeholder"]
-categories = ["command-line-interface"]
-# Inheriting the workspace README would publish the multi-crate guide under
-# this placeholder's name on crates.io, which is exactly the misdirection the
-# placeholder is trying to *avoid*. Point at this crate's own README instead.
+description = "An opinionated facade over keymap-core / keymap-config / keymap-seq: TOML in, action out, with layer resolution and the multi-key sequence buffer wired up. The convenience layer for the nine-out-of-ten Rust TUI authors who only want one import."
+keywords.workspace = true
+categories.workspace = true
+# Each published crate ships its own README so docs.rs and crates.io render the
+# crate-specific guide rather than the workspace overview.
 readme = "README.md"
+
+[dependencies]
+keymap-core = { path = "../keymap-core", version = "0.1.0" }
+keymap-config = { path = "../keymap-config", version = "0.1.0" }
+keymap-seq = { path = "../keymap-seq", version = "0.1.0" }
+
+[features]
+# `default` pulls in no terminal backend: the facade stays backend-neutral, so a
+# plain `keymap-suite` dependency drags in no crossterm. The single backend we
+# wire up today, crossterm, is opt-in and simply turns on `keymap-core`'s own
+# `crossterm` feature (which is where `TryFrom<KeyEvent> for KeyInput` lives) and
+# re-exports its `UnsupportedKey`. Propagation is kept to that one line so a
+# crossterm major bump ripples no further than `keymap-core` already lets it.
+# Only the `crossterm` name is reserved; termion/termwiz are not pre-empted —
+# add them when a consumer actually asks.
+default = []
+crossterm = ["keymap-core/crossterm"]
+
+# Only the crossterm-gated test names `crossterm` types directly; the library
+# itself reaches crossterm transitively through `keymap-core`, so this is a
+# dev-only dependency and does not appear in the published dependency graph.
+[dev-dependencies]
+crossterm = { workspace = true }
 
 [lints]
 workspace = true

@@ -267,7 +267,13 @@ dependencies = [
 
 [[package]]
 name = "keymap-suite"
-version = "0.0.0"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "keymap-config",
+ "keymap-core",
+ "keymap-seq",
+]
 
 [[package]]
 name = "keymap-term"
