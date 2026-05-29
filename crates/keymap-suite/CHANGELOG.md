@@ -15,6 +15,15 @@ All notable changes to `keymap-suite` are recorded here. The format follows
   The crate is now the opinionated facade over `keymap-core` / `keymap-config`
   / `keymap-seq` for the nine-out-of-ten case (load TOML, resolve a key, drive
   the multi-key sequence buffer).
+- `keys_for_action(&Keymap<A>, &A) -> Vec<&KeyInput>` — reverse lookup for help
+  screens and which-key menus (the inverse of `Keymap::get`). Returns borrowed
+  chords in unspecified order and does not format them, so display and sorting
+  stay the caller's. Operates on one layer; map it over your active chain for
+  layered discovery.
+- Optional `crossterm` feature: turns on `keymap-core`'s `crossterm` feature
+  (where `TryFrom<crossterm::event::KeyEvent> for KeyInput` lives) and
+  re-exports `UnsupportedKey`. The default build stays backend-neutral. Only
+  the `crossterm` feature name is reserved; termion/termwiz are not pre-empted.
 - Curated re-exports from the underlying crates: `Key`, `KeyInput`,
   `Modifiers`, `Keymap`, `resolve_layered` (from `keymap-core`); `BuildError`,
   `Warning`, `GLOBAL_LAYER`, `to_toml`, `to_toml_layered` (from
@@ -40,16 +49,29 @@ All notable changes to `keymap-suite` are recorded here. The format follows
 - `keymap_suite::prelude` — a one-import bundle of the nine-out-of-ten case
   vocabulary (`Key`, `KeyInput`, `Modifiers`, `Keymap`, `resolve_layered`,
   `SequenceKeymap`, `Match`, `PendingSequence`, `Step`, `Loaded`,
-  `LoadedExt`, `Warning`, `BuildError`, `LoadError`).
+  `LoadedExt`, `keys_for_action`, `Warning`, `BuildError`, `LoadError`).
 
 ### Notes
 
-- This release is *deliberately small*. A stateful `Runtime`, an
-  `#[derive(Action)]` macro, and a rebind sugar API were all considered and
-  intentionally deferred until usage signal arrives (see the workspace
-  `docs/STATUS.md`). The same TOML loaded via `keymap-suite` and via
-  `keymap-config` behaves identically by design — the suite never elevates a
-  `Warning` to a `BuildError` internally.
+- This release's scope was set against a real consumer (the `conductor` TUI):
+  its hand-written keymap glue showed the genuine boilerplate was *stateless*
+  (reverse lookup, crossterm conversion), not stateful. So `keys_for_action`
+  and the `crossterm` feature ship now; a stateful `Runtime` does not (the
+  consumer uses no multi-key sequences, so it would go unused).
+- Several candidates were considered and **intentionally deferred** until a
+  second consumer or settled semantics justify them (see the workspace
+  `docs/STATUS.md` for the trigger conditions):
+  - a `#[derive(Action)]` macro — `strum` already covers name↔variant mapping;
+    a keymap-specific derive waits for keymap-specific variant metadata.
+  - a defaults-⊕-user `merge`/`overlay` helper — its semantics (silent
+    override vs. conflict, unbind/tombstone expression) are undecided, and one
+    consumer is not enough to fix them.
+  - warning ergonomics (`Warning::kind()` / `chord()` accessors) — wait for a
+    second consumer that re-types `Warning` to avoid the `#[non_exhaustive]`
+    match.
+- The same TOML loaded via `keymap-suite` and via `keymap-config` behaves
+  identically by design — the suite never elevates a `Warning` to a
+  `BuildError` internally.
 - `keymap-term` is *not* included in the facade: PTY byte decoding is a
   niche use case and would widen the suite's dependency surface unhelpfully
   for the common TUI author.

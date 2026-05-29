@@ -269,6 +269,7 @@ dependencies = [
 name = "keymap-suite"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "keymap-config",
  "keymap-core",
  "keymap-seq",

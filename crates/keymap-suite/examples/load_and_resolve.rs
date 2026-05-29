@@ -94,4 +94,14 @@ action = "save"
         "sequence step 2: feed ctrl+s -> {:?}",
         pending.feed(&loaded.sequences, ctrl('s')),
     );
+
+    // Discovery (the reverse of resolution): which keys run an action? This is
+    // what a help screen or which-key menu renders. Order is unspecified, so we
+    // format and sort for display.
+    let mut save_keys: Vec<String> = keymap_suite::keys_for_action(loaded.global(), &Action::Save)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    save_keys.sort();
+    println!("\nhelp: 'save' is bound to {save_keys:?} in the global layer");
 }

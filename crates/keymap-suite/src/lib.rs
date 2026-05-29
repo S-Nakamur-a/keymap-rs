@@ -33,13 +33,27 @@
 //!
 //! - **In**: the TOML loader, layered resolution, the multi-key sequence buffer
 //!   (`PendingSequence` / `Step`), the canonical key vocabulary (`Key`,
-//!   `KeyInput`, `Modifiers`), the warnings the loader collects, and a `prelude`
-//!   that pulls them in with one `use`.
+//!   `KeyInput`, `Modifiers`), reverse lookup for help screens
+//!   ([`keys_for_action`]), the warnings the loader collects, and a `prelude`
+//!   that pulls them in with one `use`. The optional `crossterm` feature adds
+//!   the `KeyInput::try_from(crossterm::event::KeyEvent)` adapter.
 //! - **Out (on purpose)**: PTY byte decoding lives in `keymap-term`, not here;
 //!   the static legacy-survivability lint lives in `keymap-core::legacy_lints`
 //!   and stays opt-in; runtime state (the active layer chain, the inter-key
 //!   timer driving `PendingSequence::flush`) stays with the caller, exactly as
 //!   the rest of `keymap-rs` is designed.
+//!
+//! ## crossterm
+//!
+//! Most TUI authors read events through `crossterm`. Enable the `crossterm`
+//! feature and `KeyInput::try_from(key_event)` is available — it just turns on
+//! `keymap-core`'s own `crossterm` feature (where the adapter lives) and
+//! re-exports [`UnsupportedKey`], the error a key with no neutral form converts
+//! to. The default build stays backend-neutral and pulls in no crossterm.
+//!
+//! ```toml
+//! keymap-suite = { version = "0.1", features = ["crossterm"] }
+//! ```
 //!
 //! ## Warnings: lenient by default, opt into strict
 //!
@@ -101,6 +115,15 @@ pub use keymap_config::{to_toml, to_toml_layered};
 
 pub use keymap_seq::{Continuation, Match, SeqBindError, SequenceKeymap};
 pub use keymap_seq::{PendingSequence, Step};
+
+// The crossterm adapter (`TryFrom<KeyEvent> for KeyInput`) lives in
+// `keymap-core` behind its own `crossterm` feature; the impl is on the same
+// `KeyInput` we already re-export, so enabling `keymap-suite/crossterm` makes
+// `KeyInput::try_from(key_event)` resolve with no further glue. We re-export the
+// one named type that conversion can fail with so the caller can match on it
+// without reaching past the facade into `keymap-core`.
+#[cfg(feature = "crossterm")]
+pub use keymap_core::UnsupportedKey;
 
 /// The result of loading a keymap configuration: named layers, a sequence
 /// table, and any non-fatal warnings.
@@ -274,6 +297,52 @@ where
     Ok(loaded)
 }
 
+/// Every chord bound to `action` in one keymap layer — the reverse of
+/// [`Keymap::get`], for help screens and which-key menus.
+///
+/// `Keymap` indexes chord → action; a "what keys run *this* action?" view
+/// (a help screen, a command palette showing its shortcut) is the reverse, and
+/// every such UI re-derives it from [`Keymap::iter`] with the same
+/// filter-by-action boilerplate. This is that one line, once.
+///
+/// It returns borrowed [`KeyInput`]s in **unspecified order** and does not
+/// format them: rendering is the caller's (`.to_string()` for the canonical
+/// chord string, then sort/dedup to taste), so the suite imposes no display or
+/// ordering policy. A chord can appear once per binding, so multiple keys bound
+/// to the same action all come back.
+///
+/// This works on **one** layer. With a layered chain, map it over your active
+/// layers — the suite does not fold the chain for you, because which layers are
+/// active (and in what order) is your application state, exactly as it is for
+/// [`resolve_layered`].
+///
+/// ```
+/// use keymap_suite::prelude::*;
+///
+/// # #[derive(Clone, Debug, PartialEq)] enum Action { Save, Quit }
+/// let mut map = Keymap::new();
+/// map.bind(KeyInput::new(Key::Char('s'), Modifiers::CTRL), Action::Save);
+/// map.bind(KeyInput::new(Key::Char('x'), Modifiers::CTRL), Action::Save);
+///
+/// let mut keys: Vec<String> = keys_for_action(&map, &Action::Save)
+///     .iter()
+///     .map(ToString::to_string)
+///     .collect();
+/// keys.sort(); // order is unspecified, so the caller sorts for display
+/// assert_eq!(keys, ["ctrl+s", "ctrl+x"]);
+///
+/// assert!(keys_for_action(&map, &Action::Quit).is_empty());
+/// ```
+pub fn keys_for_action<'a, A>(keymap: &'a Keymap<A>, action: &A) -> Vec<&'a KeyInput>
+where
+    A: PartialEq,
+{
+    keymap
+        .iter()
+        .filter_map(|(input, bound)| (bound == action).then_some(input))
+        .collect()
+}
+
 /// The one-import bundle most callers want: the vocabulary, the resolver, the
 /// sequence buffer, and the load helpers, in one `use`.
 ///
@@ -295,6 +364,8 @@ pub mod prelude {
     pub use crate::{Match, PendingSequence, SequenceKeymap, Step};
     // Configuration result and its helpers.
     pub use crate::{Loaded, LoadedExt, Warning};
+    // Discovery — the reverse of resolution, for help screens / which-key menus.
+    pub use crate::keys_for_action;
     // Errors.
     pub use crate::{BuildError, LoadError};
 }
@@ -404,5 +475,67 @@ mod tests {
             resolve_layered(chain.iter().copied(), &key_s),
             Some(&Action::SplitPane),
         );
+    }
+
+    #[test]
+    fn keys_for_action_returns_every_chord_bound_to_it() {
+        let toml = r#"
+[keys]
+"ctrl+s" = "save"
+"ctrl+w" = "save"
+"ctrl+q" = "quit"
+"#;
+        let loaded = from_toml_str(toml, resolve).expect("valid TOML");
+        let mut keys: Vec<String> = keys_for_action(loaded.global(), &Action::Save)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["ctrl+s", "ctrl+w"]);
+
+        // An action bound nowhere in this layer comes back empty.
+        assert!(keys_for_action(loaded.global(), &Action::SplitPane).is_empty());
+    }
+
+    #[test]
+    fn keys_for_action_round_trips_through_get() {
+        // Theresa's invariant: every chord keys_for_action hands back must
+        // resolve, via Keymap::get, to the very action we asked about. This is
+        // what keeps a help screen honest — no "shown but does nothing" chord.
+        let toml = r#"
+[keys]
+"ctrl+s" = "save"
+"ctrl+w" = "save"
+"ctrl+q" = "quit"
+"g" = "quit"
+"#;
+        let loaded = from_toml_str(toml, resolve).expect("valid TOML");
+        for action in [Action::Quit, Action::Save, Action::SplitPane] {
+            for chord in keys_for_action(loaded.global(), &action) {
+                assert_eq!(
+                    loaded.global().get(chord),
+                    Some(&action),
+                    "chord {chord} listed for {action:?} but resolves elsewhere",
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "crossterm")]
+    #[test]
+    fn crossterm_key_event_converts_through_the_facade() {
+        // With the `crossterm` feature on, `KeyInput::try_from(KeyEvent)` is
+        // reachable using only names from the suite (KeyInput re-exported here,
+        // KeyEvent from the crossterm crate), and a key with no neutral form
+        // fails with the re-exported `UnsupportedKey` rather than panicking.
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let ev = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        let input = KeyInput::try_from(ev).expect("ctrl+s converts");
+        assert_eq!(input, KeyInput::new(Key::Char('s'), Modifiers::CTRL));
+
+        let unmappable = KeyEvent::new(KeyCode::CapsLock, KeyModifiers::empty());
+        let err: Result<KeyInput, UnsupportedKey> = KeyInput::try_from(unmappable);
+        assert!(err.is_err());
     }
 }

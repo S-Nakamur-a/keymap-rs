@@ -5,8 +5,9 @@ An opinionated facade over [`keymap-core`], [`keymap-config`], and [`keymap-seq`
 For the nine out of ten Rust TUI authors who want their keymap to be:
 
 - **configurable** from a TOML file (without writing the loader yourself),
-- **layered** so the same chord can mean different things in editor / panel / popup context, and
-- **sequence-aware** so `ctrl+x ctrl+s` and leader keys do not need a hand-rolled buffer,
+- **layered** so the same chord can mean different things in editor / panel / popup context,
+- **sequence-aware** so `ctrl+x ctrl+s` and leader keys do not need a hand-rolled buffer, and
+- **discoverable** so a help screen or which-key menu can list "what runs this action?" ([`keys_for_action`]).
 
 `keymap-suite` is the entry point. Authors who want to write their own backend, decode raw terminal bytes (`keymap-term`), or do empirical reachability work drop down to the individual crates.
 
@@ -15,7 +16,13 @@ For the nine out of ten Rust TUI authors who want their keymap to be:
 ```toml
 [dependencies]
 keymap-suite = "0.1"
+# Reading events through crossterm? Turn on the adapter:
+keymap-suite = { version = "0.1", features = ["crossterm"] }
 ```
+
+With the `crossterm` feature, `KeyInput::try_from(key_event)` converts a
+`crossterm::event::KeyEvent`; a key with no neutral form returns the
+re-exported `UnsupportedKey`. The default build stays backend-neutral.
 
 ## A small modal TUI in 30-ish lines
 
@@ -106,6 +113,25 @@ let loaded = keymap_suite::from_toml_str(toml, |_| None::<Action>)?
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+## Discovery: a help screen, in reverse
+
+Resolution answers "what does this key do?"; a help screen or which-key menu asks the reverse, "what keys run this action?". `keys_for_action` is that reverse lookup over one layer:
+
+```rust
+use keymap_suite::prelude::*;
+
+# #[derive(Clone, Debug, PartialEq)] enum Action { Save }
+# let mut map = Keymap::new();
+# map.bind(KeyInput::new(Key::Char('s'), Modifiers::CTRL), Action::Save);
+let mut keys: Vec<String> = keys_for_action(&map, &Action::Save)
+    .iter()
+    .map(ToString::to_string) // chords come back borrowed and unordered …
+    .collect();
+keys.sort();                  // … so you format and sort for display
+```
+
+It works on one layer; for a layered chain, map it over your active layers (the suite does not fold the chain, because which layers are active is your state).
+
 ## What state lives where
 
 | Belongs to the suite | Belongs to you (the caller) |
@@ -122,10 +148,11 @@ The library never holds a clock or a mode. That is `keymap-rs`'s spine — see [
 | --- | --- |
 | Decode raw terminal bytes back to a `KeyInput` (PTY host, multiplexer) | [`keymap-term`] |
 | Lint a keymap for chords a legacy C0 terminal cannot deliver | `keymap_core::legacy_lints` |
-| Use `crossterm::event::KeyEvent` directly | the `crossterm` feature on `keymap-core` |
+| Map an enum to/from config action names without hand-writing `from_str` | [`strum`](https://crates.io/crates/strum) on your `Action` enum |
 | Manage your own re-export discipline | the four foundation crates directly |
 
 [`keymap-core`]: https://crates.io/crates/keymap-core
 [`keymap-config`]: https://crates.io/crates/keymap-config
 [`keymap-seq`]: https://crates.io/crates/keymap-seq
 [`keymap-term`]: https://crates.io/crates/keymap-term
+[`keys_for_action`]: https://docs.rs/keymap-suite/latest/keymap_suite/fn.keys_for_action.html
