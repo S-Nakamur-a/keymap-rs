@@ -5,6 +5,7 @@
 //!
 //! Run with: `cargo run -p keymap-suite --example load_and_resolve`
 
+use keymap_suite::chords::ctrl;
 use keymap_suite::prelude::*;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -21,10 +22,6 @@ fn resolve(name: &str) -> Option<Action> {
         "split_pane" => Some(Action::SplitPane),
         _ => None,
     }
-}
-
-fn ctrl(c: char) -> KeyInput {
-    KeyInput::new(Key::Char(c), Modifiers::CTRL)
 }
 
 fn main() {

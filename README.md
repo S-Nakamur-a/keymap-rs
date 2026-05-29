@@ -89,7 +89,7 @@ The foundation crates all build on `keymap-core`, and the `crossterm` feature on
 
 | When you want to… | Crate | Role | Key types and functions |
 | --- | --- | --- | --- |
-| **Everything below, in one import** (the common case) | [`keymap-suite`](crates/keymap-suite/README.md) | The facade: TOML load + layered resolve + sequences + discovery, with a `prelude`. Optional `crossterm` feature. | `from_toml_str`, `from_toml_path`, `Loaded`, `keys_for_action`, `prelude`, `LoadError` |
+| **Everything below, in one import** (the common case) | [`keymap-suite`](crates/keymap-suite/README.md) | The facade: TOML load + layered resolve + sequences + discovery + terse chord constructors, with a `prelude`. Optional `crossterm` feature. | `from_toml_str`, `from_toml_path`, `Loaded`, `keys_for_action`, `chords`, `prelude`, `LoadError` |
 | **Bind keys to your action enum in a TUI** | `keymap-core` | Neutral key vocabulary and a generic `Keymap<A>` lookup table. State-free; a miss is *pass through*. Optional `crossterm` feature for `TryFrom<KeyEvent>`. | `Key`, `Modifiers`, `KeyInput`, `Keymap<A>`, `resolve_layered`, `resolve_passthrough`, `legacy_lints` |
 | **Load those bindings from a TOML file** (with conflicts as warnings, not errors) | `keymap-config` | TOML `[keys]` / `[layers.<name>]` / `[[sequences]]` → named-layer keymap + sequence keymap; resolves action names via a caller-supplied closure. Round-trippable. | `from_str`, `BuildOutput<A>`, `Warning`, `to_toml`, `to_toml_layered` |
 | **Bind multi-key sequences** (`ctrl+x ctrl+s`, leader trees, vim-style) | `keymap-seq` | Prefix-free multi-chord trie; the pending buffer and any inter-key timeout live caller-side. | `SequenceKeymap<A>`, `Match`, `Continuation`, `SeqBindError` |

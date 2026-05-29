@@ -132,6 +132,19 @@ keys.sort();                  // … so you format and sort for display
 
 It works on one layer; for a layered chain, map it over your active layers (the suite does not fold the chain, because which layers are active is your state).
 
+## Building chords in code
+
+Most chords come from your TOML file or arrive as a `KeyInput` at runtime, so you rarely construct one by hand. When you do — tests, or a few hard-coded defaults — the `chords` module keeps it terse:
+
+```rust
+use keymap_suite::chords::{ctrl, key};
+
+assert_eq!(ctrl('s'), "ctrl+s".parse().unwrap());
+assert_eq!(key('q'),  "q".parse().unwrap());
+```
+
+`key` / `ctrl` / `alt` cover the modifier-plus-character case and normalize the same way the loader does, so a chord you build matches one that arrives at runtime. For named keys (`Tab`, `F1`) or multi-modifier chords (`ctrl+shift+s`), parse the canonical string — `"ctrl+shift+f1".parse::<KeyInput>()` — which handles them all uniformly. (There is no `shift('a')`: a sole Shift on a character folds away, so it would just equal `key('a')`.)
+
 ## What state lives where
 
 | Belongs to the suite | Belongs to you (the caller) |

@@ -33,10 +33,11 @@
 //!
 //! - **In**: the TOML loader, layered resolution, the multi-key sequence buffer
 //!   (`PendingSequence` / `Step`), the canonical key vocabulary (`Key`,
-//!   `KeyInput`, `Modifiers`), reverse lookup for help screens
-//!   ([`keys_for_action`]), the warnings the loader collects, and a `prelude`
-//!   that pulls them in with one `use`. The optional `crossterm` feature adds
-//!   the `KeyInput::try_from(crossterm::event::KeyEvent)` adapter.
+//!   `KeyInput`, `Modifiers`), terse chord constructors ([`chords`]), reverse
+//!   lookup for help screens ([`keys_for_action`]), the warnings the loader
+//!   collects, and a `prelude` that pulls them in with one `use`. The optional
+//!   `crossterm` feature adds the
+//!   `KeyInput::try_from(crossterm::event::KeyEvent)` adapter.
 //! - **Out (on purpose)**: PTY byte decoding lives in `keymap-term`, not here;
 //!   the static legacy-survivability lint lives in `keymap-core::legacy_lints`
 //!   and stays opt-in; runtime state (the active layer chain, the inter-key
@@ -343,6 +344,62 @@ where
         .collect()
 }
 
+/// Terse constructors for the common "modifier + character" chords, so building
+/// a [`KeyInput`] in code reads `ctrl('s')` rather than
+/// `KeyInput::new(Key::Char('s'), Modifiers::CTRL)`.
+///
+/// These are the shapes that show up over and over in tests and in apps that
+/// hard-code a few default bindings. They cover exactly the
+/// **single-modifier-on-a-character** case; everything else has a better tool:
+///
+/// - **Named keys** (`Tab`, `F1`, `Enter`, arrows) and **multi-modifier chords**
+///   (`ctrl+shift+s`): parse the canonical string, which handles them all
+///   uniformly — `"ctrl+shift+f1".parse::<KeyInput>()` — or reach for
+///   [`KeyInput::new`] with the explicit [`Key`]/[`Modifiers`].
+/// - **A bare `shift` + a character** is deliberately *absent*: a sole Shift on a
+///   character folds away (it is redundant with the resolved glyph — see
+///   [`KeyInput`]), so `shift('a')` would normalize to exactly `key('a')` and
+///   only mislead. Shift survives only on non-character keys (`shift+tab`) or
+///   alongside another modifier (`ctrl+shift+s`), both of which go through
+///   `.parse()` / `KeyInput::new`.
+///
+/// Every constructor here funnels through [`KeyInput::normalized`] — the same
+/// rule the TOML grammar and the crossterm adapter use — so a chord you build
+/// with `ctrl('s')` is byte-for-byte the chord that arrives at runtime, and
+/// lookup cannot silently miss.
+///
+/// The names are short and common (`key`, `ctrl`, `alt`), so they live in this
+/// module rather than the [`prelude`]'s flat namespace. Pull them in where you
+/// want them — typically the top of a test module:
+///
+/// ```
+/// use keymap_suite::chords::{ctrl, key};
+///
+/// assert_eq!(ctrl('s'), "ctrl+s".parse().unwrap());
+/// assert_eq!(key('q'), "q".parse().unwrap());
+/// ```
+pub mod chords {
+    use crate::{Key, KeyInput, Modifiers};
+
+    /// A character with no modifiers (e.g. `key('q')` → `q`).
+    #[must_use]
+    pub fn key(c: char) -> KeyInput {
+        KeyInput::normalized(Key::Char(c), Modifiers::NONE)
+    }
+
+    /// A character held with Control (e.g. `ctrl('s')` → `ctrl+s`).
+    #[must_use]
+    pub fn ctrl(c: char) -> KeyInput {
+        KeyInput::normalized(Key::Char(c), Modifiers::CTRL)
+    }
+
+    /// A character held with Alt/Option (e.g. `alt('x')` → `alt+x`).
+    #[must_use]
+    pub fn alt(c: char) -> KeyInput {
+        KeyInput::normalized(Key::Char(c), Modifiers::ALT)
+    }
+}
+
 /// The one-import bundle most callers want: the vocabulary, the resolver, the
 /// sequence buffer, and the load helpers, in one `use`.
 ///
@@ -368,6 +425,9 @@ pub mod prelude {
     pub use crate::keys_for_action;
     // Errors.
     pub use crate::{BuildError, LoadError};
+    // Terse chord constructors, kept namespaced (`chords::ctrl('s')`) because
+    // `key`/`ctrl`/`alt` are short, collision-prone names.
+    pub use crate::chords;
 }
 
 #[cfg(test)]
@@ -519,6 +579,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn chord_constructors_match_their_parsed_equivalents() {
+        use crate::chords::{alt, ctrl, key};
+
+        // The terse constructor and the canonical-string parse must agree — this
+        // is what lets a binding built in code and one loaded from TOML collide.
+        assert_eq!(key('q'), "q".parse().unwrap());
+        assert_eq!(ctrl('s'), "ctrl+s".parse().unwrap());
+        assert_eq!(alt('x'), "alt+x".parse().unwrap());
+
+        // And they match what the explicit constructor produces.
+        assert_eq!(ctrl('s'), KeyInput::new(Key::Char('s'), Modifiers::CTRL));
+    }
+
+    #[test]
+    fn chord_constructors_funnel_through_normalization() {
+        use crate::chords::{ctrl, key};
+
+        // `ctrl+shift+s` keeps Shift (a second modifier is held), so it is a
+        // distinct chord — the constructors are not a way to sneak past
+        // normalization. `key('a')` is bare, with no Shift to fold.
+        assert_eq!(key('a'), KeyInput::new(Key::Char('a'), Modifiers::NONE));
+        assert_ne!(ctrl('s'), KeyInput::new(Key::Char('s'), Modifiers::NONE));
     }
 
     #[cfg(feature = "crossterm")]

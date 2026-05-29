@@ -20,6 +20,16 @@ All notable changes to `keymap-suite` are recorded here. The format follows
   chords in unspecified order and does not format them, so display and sorting
   stay the caller's. Operates on one layer; map it over your active chain for
   layered discovery.
+- `chords` module — terse constructors `key(c)` / `ctrl(c)` / `alt(c)` for the
+  common modifier-plus-character case, so building a `KeyInput` in code reads
+  `ctrl('s')` instead of `KeyInput::new(Key::Char('s'), Modifiers::CTRL)`. They
+  funnel through `KeyInput::normalized` (same rule as the TOML grammar and the
+  crossterm adapter), so a chord built in code matches one that arrives at
+  runtime. Named keys / multi-modifier chords use `"ctrl+shift+f1".parse()` or
+  `KeyInput::new`; a bare `shift(char)` is intentionally absent (a sole Shift on
+  a character folds away, so it would equal `key(char)`). Kept namespaced
+  (`chords::ctrl`) — the prelude re-exports the module, not the bare names,
+  which are too collision-prone to flatten.
 - Optional `crossterm` feature: turns on `keymap-core`'s `crossterm` feature
   (where `TryFrom<crossterm::event::KeyEvent> for KeyInput` lives) and
   re-exports `UnsupportedKey`. The default build stays backend-neutral. Only
@@ -49,7 +59,8 @@ All notable changes to `keymap-suite` are recorded here. The format follows
 - `keymap_suite::prelude` — a one-import bundle of the nine-out-of-ten case
   vocabulary (`Key`, `KeyInput`, `Modifiers`, `Keymap`, `resolve_layered`,
   `SequenceKeymap`, `Match`, `PendingSequence`, `Step`, `Loaded`,
-  `LoadedExt`, `keys_for_action`, `Warning`, `BuildError`, `LoadError`).
+  `LoadedExt`, `keys_for_action`, the `chords` module, `Warning`, `BuildError`,
+  `LoadError`).
 
 ### Notes
 
