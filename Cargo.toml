@@ -9,10 +9,12 @@ members = [
     "crates/keymap-tui",
     # Name-reservation placeholder; see docs/STATUS.md "Packaging retreat".
     "crates/keymap-suite",
+    # DX showcase: 5-value demonstration + grue measurement tool. publish=false.
+    "crates/keymap-showcase",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"

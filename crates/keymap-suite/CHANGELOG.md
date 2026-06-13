@@ -7,6 +7,42 @@ All notable changes to `keymap-suite` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-13
+
+All changes are **additive** re-exports; no existing public API is removed or altered.
+
+### Added
+
+The following items are now re-exported from the suite root (not the prelude —
+more specialised, so held at root until usage justifies prelude promotion):
+
+- `CommandIndex<A>` — from `keymap_core::cmd`. Command-palette index; `bind`,
+  `get`, `complete(prefix)`, `iter`.
+- `TimedPending` / `TimedStep` — from `keymap-seq`. Deadline-aware sequence
+  buffer wrapper.
+- `validate_rebind` / `RebindVerdict` / `BreakReason` / `LegacyForm` — from
+  `keymap-core`. `LegacyForm` is included because `RebindVerdict::Allowed`
+  carries it (same precedent as `UnsupportedKey` for the crossterm adapter).
+- `merge` / `Merged` / `MergeNote` — from `keymap-config`. Defaults⊕user overlay.
+- `WarningKind` — from `keymap-config`. Fieldless discriminant for `Warning`;
+  replaces per-consumer enum re-typing.
+- `to_toml_layered_with_unbinds` — from `keymap-config`. Round-trip tombstone
+  serializer.
+- `legacy_lints` / `LegacyLint` — from `keymap-core`. Root re-export only (not
+  prelude) — opt-in diagnostic pass, not a per-event operation. Previously only
+  reachable by depending on `keymap-core` directly; now available without a
+  direct `keymap-core` dependency. This gap was found by the `keymap-showcase`
+  measurement run and closed in the same changeset.
+
+### Release-flow note
+
+As demonstrated by PR #1's CI log: a version-bump PR causes `cargo-semver-checks`
+to skip all checks (0 checks / 252 skipped). The recommended release flow is
+therefore: **(1)** land all feature changes on a bump-free PR so semver-checks
+runs and validates additivity, then **(2)** land the version bump alone in a
+separate follow-up PR. This 0.1.1 working-tree state reflects the final combined
+form; when converting to commits, split at that boundary.
+
 ## [0.1.0] - 2026-05-29
 
 ### Added
@@ -88,4 +124,5 @@ All notable changes to `keymap-suite` are recorded here. The format follows
   for the common TUI author.
 
 [Unreleased]: https://github.com/S-Nakamur-a/keymap-rs/commits/main
+[0.1.1]: https://crates.io/crates/keymap-suite/0.1.1
 [0.1.0]: https://crates.io/crates/keymap-suite/0.1.0

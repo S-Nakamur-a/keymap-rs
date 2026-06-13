@@ -230,7 +230,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "keymap-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "keymap-core",
  "keymap-seq",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "keymap-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossterm",
 ]
@@ -260,14 +260,24 @@ dependencies = [
 
 [[package]]
 name = "keymap-seq"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "keymap-core",
 ]
 
 [[package]]
+name = "keymap-showcase"
+version = "0.1.1"
+dependencies = [
+ "crossterm",
+ "keymap-suite",
+ "keymap-term",
+ "ratatui",
+]
+
+[[package]]
 name = "keymap-suite"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossterm",
  "keymap-config",
@@ -277,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "keymap-term"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "keymap-core",
  "serde",

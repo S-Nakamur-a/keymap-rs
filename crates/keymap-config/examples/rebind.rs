@@ -20,7 +20,9 @@
 //! `cargo run -p keymap-config --example rebind`.
 
 use keymap_config::to_toml;
-use keymap_core::{Key, KeyInput, Keymap, LegacyForm, Modifiers, resolve_layered};
+use keymap_core::{
+    BreakReason, Key, KeyInput, Keymap, LegacyForm, Modifiers, RebindVerdict, validate_rebind,
+};
 use keymap_seq::SequenceKeymap;
 use keymap_term::{DecodeMode, Decoded, decode};
 
@@ -76,7 +78,7 @@ fn main() {
     report(
         "rebind Save ->",
         cs,
-        validate_rebind(&layers, 0, cs, Action::Save, &reserved),
+        &validate_rebind(&layers, 0, cs, &reserved),
     );
 
     // The user fat-fingers Escape while trying to pick a key: refused, and the
@@ -85,7 +87,7 @@ fn main() {
     report(
         "rebind Save ->",
         esc,
-        validate_rebind(&layers, 0, esc, Action::Save, &reserved),
+        &validate_rebind(&layers, 0, esc, &reserved),
     );
 
     // Rebinding onto `j` is allowed but overrides CursorDown — an advisory, not a
@@ -95,7 +97,7 @@ fn main() {
     report(
         "rebind Split ->",
         j,
-        validate_rebind(&layers, 0, j, Action::Split, &reserved),
+        &validate_rebind(&layers, 0, j, &reserved),
     );
 
     println!("\n== composed resolution: an upper layer cannot shadow reserved ==");
@@ -107,7 +109,7 @@ fn main() {
     report(
         "rebind Save into overlay ->",
         esc,
-        validate_rebind(&two, 0, esc, Action::Save, &reserved),
+        &validate_rebind(&two, 0, esc, &reserved),
     );
 
     println!("\n== legacy collapse: ctrl+i ≡ tab on a baseline terminal ==");
@@ -119,14 +121,13 @@ fn main() {
     report(
         "rebind Save ->",
         ctrl_i,
-        validate_rebind(&layers, 0, ctrl_i, Action::Save, &tab_reserved),
+        &validate_rebind(&layers, 0, ctrl_i, &tab_reserved),
     );
 
     println!("\n== persist: serialize for the caller to write ==");
     // Commit the one rebind that was allowed, then serialize. We bind only after a
     // successful validate — never mutate then check.
-    if let RebindVerdict::Allowed { .. } = validate_rebind(&layers, 0, cs, Action::Save, &reserved)
-    {
+    if let RebindVerdict::Allowed { .. } = validate_rebind(&layers, 0, cs, &reserved) {
         global.bind(cs, Action::Save);
     }
     let toml = to_toml(&global, &SequenceKeymap::<Action>::new(), |a| {
@@ -183,72 +184,15 @@ fn show(label: &str, bytes: &[u8]) {
     }
 }
 
-/// What validating a proposed rebind concluded.
-#[derive(Clone, Copy)]
-enum RebindVerdict<'a> {
-    /// Refused: the rebind would break the escape hatch. Carries the reserved key
-    /// it would steal and why.
-    BreaksEscape {
-        reserved: KeyInput,
-        why: &'static str,
-    },
-    /// Allowed. `shadows` is what the chord currently resolves to (you would be
-    /// overriding it), and `legacy` flags whether it survives a legacy terminal.
-    Allowed {
-        shadows: Option<&'a Action>,
-        legacy: LegacyForm,
-    },
-}
-
-/// Validates a proposed rebind of `action` onto `proposed` in layer `target`,
-/// **without mutating** the live keymap.
-///
-/// The escape hatch is protected two ways:
-/// - *Legacy collapse*: if `proposed` sends the same byte as a reserved chord on
-///   a legacy terminal (`ctrl+i` ≡ `tab`), binding it would also fire on that
-///   reserved key — refused on the structural fact, no terminal measurement.
-/// - *Resolution survival*: simulate the rebind in a clone and re-resolve every
-///   reserved key against the **composed** layer stack. If any now resolves to
-///   something different (stolen directly, or shadowed from an upper layer), the
-///   rebind is refused. This is why the whole layer list is taken, not one layer.
-fn validate_rebind<'a>(
-    layers: &[&'a Keymap<Action>],
-    target: usize,
-    proposed: KeyInput,
-    action: Action,
-    reserved: &[KeyInput],
-) -> RebindVerdict<'a> {
-    if let LegacyForm::CollapsesTo(byte_twin) = proposed.legacy_form() {
-        if reserved.contains(&byte_twin) {
-            return RebindVerdict::BreaksEscape {
-                reserved: byte_twin,
-                why: "collapses onto a reserved key on legacy terminals",
-            };
-        }
-    }
-
-    let mut simulated: Vec<Keymap<Action>> = layers.iter().map(|l| (*l).clone()).collect();
-    simulated[target].bind(proposed, action);
-    for &r in reserved {
-        let before = resolve_layered(layers.iter().copied(), &r);
-        let after = resolve_layered(simulated.iter(), &r);
-        if before != after {
-            return RebindVerdict::BreaksEscape {
-                reserved: r,
-                why: "would steal or shadow this reserved key",
-            };
-        }
-    }
-
-    RebindVerdict::Allowed {
-        shadows: resolve_layered(layers.iter().copied(), &proposed),
-        legacy: proposed.legacy_form(),
-    }
-}
-
-fn report(what: &str, proposed: KeyInput, verdict: RebindVerdict<'_>) {
+fn report(what: &str, proposed: KeyInput, verdict: &RebindVerdict<'_, Action>) {
     match verdict {
-        RebindVerdict::BreaksEscape { reserved, why } => {
+        RebindVerdict::BreaksReserved { reserved, reason } => {
+            let why = match reason {
+                BreakReason::DirectSteal => "would steal this reserved key",
+                BreakReason::LegacyCollapse => "collapses onto a reserved key on legacy terminals",
+                // Non-exhaustive: handle future variants gracefully.
+                _ => "breaks a reserved key",
+            };
             println!("  {what} {proposed}: REFUSED — {why} ({reserved})");
         }
         RebindVerdict::Allowed { shadows, legacy } => {
@@ -270,5 +214,7 @@ fn report(what: &str, proposed: KeyInput, verdict: RebindVerdict<'_>) {
             };
             println!("  {what} {proposed}: allowed{suffix}");
         }
+        // Non-exhaustive: forward-compatible catch-all.
+        _ => println!("  {what} {proposed}: (unrecognised verdict)"),
     }
 }

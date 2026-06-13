@@ -1,10 +1,10 @@
-//! Ex-command (`:wq`) input, composed entirely caller-side.
+//! Ex-command (`:wq`) execution, composed entirely caller-side.
 //!
 //! A command line like vim's `:wq` is **not** a chord sequence, so it does not
 //! use `keymap-seq` (that crate is a prefix-free chord trie; a command line is an
 //! open string language — `:w`, `:wq`, `:wqa` coexist, and editing keys mutate a
-//! buffer rather than extend a sequence). It decomposes into three stages, and
-//! the library adds *no new type* for any of them:
+//! buffer rather than extend a sequence). The *execution* path decomposes into
+//! three stages, and the library adds no new type for them:
 //!
 //! 1. **Press `:`** — an ordinary single-key binding. `Keymap::get` returns
 //!    `EnterCommandMode`, exactly like any other action.
@@ -12,12 +12,17 @@
 //!    buffer. This is caller state, the same way `keymap-seq`'s pending buffer is.
 //! 3. **Dispatch on Enter** — the buffer is resolved to an action by a
 //!    `FnMut(&str) -> Option<Action>` closure. That is the *same shape* as
-//!    `keymap_config::from_str`'s name resolver; we reuse the shape, deliberately
-//!    not that crate's type, so the command line stays free of a new public API.
+//!    `keymap_config::from_str`'s name resolver; we reuse the shape, not that
+//!    crate's type, so the execution path remains a plain closure.
 //!
-//! Deliberate non-goals (until demand is proven — see `docs/ROADMAP.md`):
-//! compound splitting (`wq` → `w` + `q`), arguments (`:w file`), ranges
-//! (`:%s/a/b/g`), and `:`-completion.
+//! **Execution vs discovery are orthogonal.** This example shows the execution
+//! path. For the *discovery* layer — front-prefix completion (`:w<Tab>`) and a
+//! full palette listing — see `examples/command_palette.rs` and
+//! [`keymap_core::cmd::CommandIndex`]. The two are independent: you can use one
+//! without the other, and combining them is a matter of wiring in the caller.
+//!
+//! Deliberate non-goals: compound splitting (`wq` → `w` + `q`), arguments
+//! (`:w file`), ranges (`:%s/a/b/g`). See `docs/ROADMAP.md`.
 //!
 //! Run with: `cargo run -p keymap-core --example ex_command`
 

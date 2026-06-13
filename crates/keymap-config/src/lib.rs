@@ -135,6 +135,14 @@ pub struct BuildOutput<A> {
     /// Problems that did not prevent building (conflicts, unknown actions,
     /// prefix shadows), in the order they were first seen.
     pub warnings: Vec<Warning>,
+    /// Chords declared as tombstones (`= false`) in the config, grouped by layer
+    /// name. A tombstone records an *intent to remove* a chord from a base
+    /// keymap; the chord is not present in `layers` (it has no action), but is
+    /// carried here so [`merge`] can apply the removal to a base
+    /// [`BuildOutput`].
+    ///
+    /// Empty when the config has no `= false` declarations.
+    pub unbinds: BTreeMap<String, Vec<KeyInput>>,
 }
 
 impl<A> BuildOutput<A> {
@@ -228,6 +236,93 @@ pub enum Warning {
     },
 }
 
+/// A category tag for a [`Warning`], without the field data.
+///
+/// Useful for filtering or routing warnings without pattern-matching on the full
+/// variant: `warning.kind() == WarningKind::Conflict` tests the category in one
+/// comparison, even when you do not need the chord or contender details.
+///
+/// This is `#[non_exhaustive]` — new [`Warning`] variants will add corresponding
+/// `WarningKind` variants in a non-breaking additive release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum WarningKind {
+    /// See [`Warning::Conflict`].
+    Conflict,
+    /// See [`Warning::UnknownAction`].
+    UnknownAction,
+    /// See [`Warning::PrefixShadow`].
+    PrefixShadow,
+    /// See [`Warning::EmptySequence`].
+    EmptySequence,
+    /// See [`Warning::SequenceShadow`].
+    SequenceShadow,
+}
+
+impl Warning {
+    /// Returns the category of this warning without the field data.
+    ///
+    /// Useful for filtering: `w.kind() == WarningKind::Conflict` tests the
+    /// category in a single comparison, even when the field details are not needed.
+    #[must_use]
+    pub fn kind(&self) -> WarningKind {
+        match self {
+            Warning::Conflict { .. } => WarningKind::Conflict,
+            Warning::UnknownAction { .. } => WarningKind::UnknownAction,
+            Warning::PrefixShadow { .. } => WarningKind::PrefixShadow,
+            Warning::EmptySequence { .. } => WarningKind::EmptySequence,
+            Warning::SequenceShadow { .. } => WarningKind::SequenceShadow,
+            // Non-exhaustive: future variants covered at compile time.
+        }
+    }
+}
+
+impl core::fmt::Display for Warning {
+    /// Formats the warning as a single human-readable line.
+    ///
+    /// **Display only — do not parse this output.** The format is not stable and
+    /// may change between minor versions; it is intended for logging and user
+    /// messages, not machine consumption.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Warning::Conflict { chord, winner, .. } => {
+                write!(f, "conflict on {chord:?}: {winner:?} wins")
+            }
+            Warning::UnknownAction { key, action } => {
+                write!(f, "unknown action {action:?} for key {key:?}")
+            }
+            Warning::PrefixShadow {
+                prefix,
+                shadowed,
+                prefix_action,
+                ..
+            } => {
+                write!(
+                    f,
+                    "prefix shadow: {:?} ({prefix_action:?}) shadows {:?}; later binding dropped",
+                    prefix.join(" "),
+                    shadowed.join(" ")
+                )
+            }
+            Warning::EmptySequence { action } => {
+                write!(f, "empty sequence for action {action:?}")
+            }
+            Warning::SequenceShadow {
+                chord,
+                sequence,
+                chord_action,
+                ..
+            } => {
+                write!(
+                    f,
+                    "sequence shadow: chord {chord:?} ({chord_action:?}) shadows sequence {:?}",
+                    sequence.join(" ")
+                )
+            }
+        }
+    }
+}
+
 /// A fatal problem that prevents building a [`Keymap`].
 #[derive(Debug)]
 #[non_exhaustive]
@@ -241,6 +336,16 @@ pub enum BuildError {
         /// The underlying parse error.
         source: ParseKeyInputError,
     },
+    /// A chord in a `[keys]` or `[layers.<name>]` table was assigned `= true`.
+    ///
+    /// Only `= false` is a valid tombstone (unbind declaration); `= true` is
+    /// rejected as an explicit error to prevent accidental partial unbinds. In
+    /// 0.1.0 both `= true` and `= false` caused `BuildError::Toml` (type
+    /// mismatch); 0.1.1 accepts `= false` but keeps `= true` fatal.
+    InvalidTombstone {
+        /// The offending chord string as written.
+        key: String,
+    },
 }
 
 impl core::fmt::Display for BuildError {
@@ -248,6 +353,12 @@ impl core::fmt::Display for BuildError {
         match self {
             BuildError::Toml(_) => f.write_str("invalid TOML"),
             BuildError::KeyParse { key, .. } => write!(f, "invalid key string {key:?}"),
+            BuildError::InvalidTombstone { key } => {
+                write!(
+                    f,
+                    "invalid tombstone for {key:?}: use `= false` to unbind, not `= true`"
+                )
+            }
         }
     }
 }
@@ -257,6 +368,7 @@ impl std::error::Error for BuildError {
         match self {
             BuildError::Toml(e) => Some(e),
             BuildError::KeyParse { source, .. } => Some(source),
+            BuildError::InvalidTombstone { .. } => None,
         }
     }
 }
@@ -276,11 +388,28 @@ impl From<toml::de::Error> for BuildError {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     #[serde(default)]
-    keys: BTreeMap<String, String>,
+    keys: BTreeMap<String, RawValue>,
     #[serde(default)]
-    layers: BTreeMap<String, BTreeMap<String, String>>,
+    layers: BTreeMap<String, BTreeMap<String, RawValue>>,
     #[serde(default)]
     sequences: Vec<RawSequence>,
+}
+
+/// A chord's value in TOML: either an action name (string) or a tombstone
+/// (`false` = unbind, `true` = error).
+///
+/// In 0.1.0 any non-string chord value was a `BuildError::Toml`. In 0.1.1
+/// `= false` is newly accepted as a tombstone (unbind). `= true` remains a
+/// `BuildError::InvalidTombstone` — an explicit error on `true` prevents
+/// accidental partial unbinds from a copy-paste of `= true` (i.e. whatever
+/// the caller meant was not "bind this chord to nothing").
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawValue {
+    /// A chord binding: `"chord" = "action_name"`.
+    Action(String),
+    /// A chord tombstone: `"chord" = false` (unbind) or `"chord" = true` (error).
+    Bool(bool),
 }
 
 #[derive(Deserialize)]
@@ -293,6 +422,11 @@ struct RawSequence {
 /// The built sequence map paired with its sequence→action-name dictionary (the
 /// names let a cross-shadow be reported against the single-key table).
 type SequenceBuild<A> = (SequenceKeymap<A>, HashMap<Vec<KeyInput>, String>);
+
+/// Return type of [`build_layer`]: the keymap, the winning action-name-per-chord
+/// dictionary (for cross-shadow detection in the global layer), and the list of
+/// tombstone chords (`= false`).
+type LayerBuild<A> = (Keymap<A>, HashMap<KeyInput, String>, Vec<KeyInput>);
 
 /// Builds a [`Keymap`] from a TOML string.
 ///
@@ -317,6 +451,7 @@ where
 
     let mut warnings = Vec::new();
     let mut built: BTreeMap<String, Keymap<A>> = BTreeMap::new();
+    let mut unbinds: BTreeMap<String, Vec<KeyInput>> = BTreeMap::new();
 
     // The global layer is the top-level `[keys]` table plus an explicit
     // `[layers.global]` if the author also wrote one. The two are concatenated —
@@ -326,8 +461,12 @@ where
     // silently dropped. The global layer is always inserted, even when empty.
     let explicit_global = layers.remove(GLOBAL_LAYER).unwrap_or_default();
     let global_entries = keys.into_iter().chain(explicit_global);
-    let (global_keymap, global_names) = build_layer(global_entries, &mut resolve, &mut warnings)?;
+    let (global_keymap, global_names, global_unbinds) =
+        build_layer(global_entries, &mut resolve, &mut warnings)?;
     built.insert(GLOBAL_LAYER.to_string(), global_keymap);
+    if !global_unbinds.is_empty() {
+        unbinds.insert(GLOBAL_LAYER.to_string(), global_unbinds);
+    }
 
     // Every other named layer, in `BTreeMap` name order so warnings are
     // deterministic. Each layer's conflicts are detected within itself; layer
@@ -335,8 +474,11 @@ where
     for (name, raw_keys) in layers {
         // Only the global layer feeds the cross-shadow check below, so a
         // non-global layer's name dictionary is computed but not needed here.
-        let (keymap, _names) = build_layer(raw_keys, &mut resolve, &mut warnings)?;
-        built.insert(name, keymap);
+        let (keymap, _names, layer_unbinds) = build_layer(raw_keys, &mut resolve, &mut warnings)?;
+        built.insert(name.clone(), keymap);
+        if !layer_unbinds.is_empty() {
+            unbinds.insert(name, layer_unbinds);
+        }
     }
 
     // Sequences are global-only, so the cross-shadow check (single chord versus
@@ -348,46 +490,68 @@ where
         layers: built,
         sequences,
         warnings,
+        unbinds,
     })
 }
 
-/// Builds one layer's [`Keymap`] from its `(raw key string, action name)`
+/// Builds one layer's [`Keymap`] from its `(raw key string, raw value)`
 /// entries, appending survivable problems to `warnings`.
 ///
 /// Entries are grouped by the chord they normalize to (so different spellings of
 /// the same chord — `ctrl+a` and `control+a` — collide), visited in first-seen
 /// order. Within a group the last resolvable binding wins and a [`Warning::Conflict`]
 /// is reported; an unresolvable action name is a [`Warning::UnknownAction`] and
-/// that single entry is skipped.
+/// that single entry is skipped. A `= false` tombstone is collected into the
+/// returned unbind list without adding a binding; a `= true` tombstone is a fatal
+/// [`BuildError::InvalidTombstone`].
 ///
-/// Returns the built map together with the winning action *name* per chord, kept
-/// so a cross-shadow warning can name the single-key side (the keymap stores `A`,
-/// not names). Callers that don't need the names (any layer but global) discard them.
+/// Returns `(keymap, names, unbinds)`:
+/// - `keymap`: the resolved bindings.
+/// - `names`: the winning action name per chord (used by the cross-shadow check
+///   in the global layer; other callers discard it).
+/// - `unbinds`: chords declared with `= false`, in parse order.
 fn build_layer<A, I, F>(
     entries: I,
     resolve: &mut F,
     warnings: &mut Vec<Warning>,
-) -> Result<(Keymap<A>, HashMap<KeyInput, String>), BuildError>
+) -> Result<LayerBuild<A>, BuildError>
 where
-    I: IntoIterator<Item = (String, String)>,
+    I: IntoIterator<Item = (String, RawValue)>,
     F: FnMut(&str) -> Option<A>,
 {
     // Parse every key first (parse failures are fatal), grouping entries by the
     // chord they normalize to, in first-seen order.
     let mut order: Vec<KeyInput> = Vec::new();
     let mut groups: HashMap<KeyInput, Vec<(String, String)>> = HashMap::new();
-    for (raw_key, action_name) in entries {
+    let mut tombstone_order: Vec<KeyInput> = Vec::new();
+    let mut tombstone_set: std::collections::HashSet<KeyInput> = std::collections::HashSet::new();
+
+    for (raw_key, raw_value) in entries {
         let chord = raw_key
             .parse::<KeyInput>()
             .map_err(|source| BuildError::KeyParse {
                 key: raw_key.clone(),
                 source,
             })?;
-        let entry = groups.entry(chord).or_default();
-        if entry.is_empty() {
-            order.push(chord);
+
+        match raw_value {
+            RawValue::Bool(false) => {
+                // Tombstone: record in unbinds (deduplicated, first-seen order).
+                if tombstone_set.insert(chord) {
+                    tombstone_order.push(chord);
+                }
+            }
+            RawValue::Bool(true) => {
+                return Err(BuildError::InvalidTombstone { key: raw_key });
+            }
+            RawValue::Action(action_name) => {
+                let entry = groups.entry(chord).or_default();
+                if entry.is_empty() {
+                    order.push(chord);
+                }
+                entry.push((raw_key, action_name));
+            }
         }
-        entry.push((raw_key, action_name));
     }
 
     let mut keymap = Keymap::new();
@@ -426,7 +590,7 @@ where
         }
     }
 
-    Ok((keymap, names))
+    Ok((keymap, names, tombstone_order))
 }
 
 /// Serializes a [`Keymap`] and [`SequenceKeymap`] back into a TOML config string
@@ -495,6 +659,9 @@ where
 /// round-trip a parsed config; an empty layer emits nothing, and a global-only set
 /// produces byte-identical output to [`to_toml`] on that one layer.
 ///
+/// To also emit tombstone entries (`"chord" = false`) for unbind declarations, use
+/// [`to_toml_layered_with_unbinds`] instead.
+///
 /// # Panics
 ///
 /// Never in practice, for the same reason as [`to_toml`].
@@ -506,28 +673,290 @@ pub fn to_toml_layered<A, F>(
 where
     F: FnMut(&A) -> Option<&str>,
 {
+    to_toml_layered_impl(layers, sequences, &BTreeMap::new(), &mut name_of)
+}
+
+/// Serializes a named-layer set, the global [`SequenceKeymap`], and any unbind
+/// declarations (`"chord" = false`) back into a TOML config string.
+///
+/// This is the tombstone-aware additive version of [`to_toml_layered`]: when
+/// `unbinds` is non-empty, each chord in `unbinds[layer]` is emitted as
+/// `"chord" = false` in the appropriate layer table. When `unbinds` is empty the
+/// output is **byte-identical** to [`to_toml_layered`] — callers that never use
+/// tombstones can use either function interchangeably.
+///
+/// Like all emit functions the output is deterministic and injection-safe: all
+/// values are constructed as [`toml::Value`] (never by string concatenation), so
+/// a chord whose display form contains TOML metacharacters cannot break out of its
+/// string.
+///
+/// # Panics
+///
+/// Never in practice, for the same reason as [`to_toml`].
+pub fn to_toml_layered_with_unbinds<A, F>(
+    layers: &BTreeMap<String, Keymap<A>>,
+    sequences: &SequenceKeymap<A>,
+    unbinds: &BTreeMap<String, Vec<KeyInput>>,
+    mut name_of: F,
+) -> String
+where
+    F: FnMut(&A) -> Option<&str>,
+{
+    to_toml_layered_impl(layers, sequences, unbinds, &mut name_of)
+}
+
+/// Shared implementation for [`to_toml_layered`] and [`to_toml_layered_with_unbinds`].
+fn to_toml_layered_impl<A, F>(
+    layers: &BTreeMap<String, Keymap<A>>,
+    sequences: &SequenceKeymap<A>,
+    unbinds: &BTreeMap<String, Vec<KeyInput>>,
+    name_of: &mut F,
+) -> String
+where
+    F: FnMut(&A) -> Option<&str>,
+{
     let mut root = toml::Table::new();
     let mut named = toml::Table::new();
 
-    for (name, keymap) in layers {
-        let table = keymap_to_table(keymap, &mut name_of);
+    // Collect all layer names from both `layers` and `unbinds` so that a layer
+    // with only tombstones (no remaining bindings) is still emitted.
+    let mut all_layer_names: std::collections::BTreeSet<&str> =
+        layers.keys().map(String::as_str).collect();
+    for name in unbinds.keys() {
+        all_layer_names.insert(name.as_str());
+    }
+
+    for name in all_layer_names {
+        let mut table = if let Some(keymap) = layers.get(name) {
+            keymap_to_table(keymap, name_of)
+        } else {
+            toml::Table::new()
+        };
+
+        // Append tombstone entries (`= false`) for this layer, using toml::Value
+        // to avoid any string injection.
+        if let Some(layer_unbinds) = unbinds.get(name) {
+            for chord in layer_unbinds {
+                table.insert(chord.to_string(), toml::Value::Boolean(false));
+            }
+        }
+
         if table.is_empty() {
             continue;
         }
         if name == GLOBAL_LAYER {
             root.insert("keys".to_string(), toml::Value::Table(table));
         } else {
-            named.insert(name.clone(), toml::Value::Table(table));
+            named.insert(name.to_string(), toml::Value::Table(table));
         }
     }
 
-    insert_sequences(&mut root, sequences, &mut name_of);
+    insert_sequences(&mut root, sequences, name_of);
     if !named.is_empty() {
         root.insert("layers".to_string(), toml::Value::Table(named));
     }
 
     // Serializing a table of string-only values is infallible.
     toml::to_string(&root).expect("string-only TOML value always serializes")
+}
+
+/// The result of a [`merge`] operation: the merged output plus advisory notes.
+///
+/// Notes are kept **separate from [`BuildOutput::warnings`]** so that callers
+/// gating on `output.warnings.is_empty()` (e.g. `deny_warnings`) are not
+/// triggered by legitimate override operations. A note is information the caller
+/// may want to surface or log; it is never an error.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Merged<A> {
+    /// The merged build output. Its `warnings` field carries the union of
+    /// `base.warnings` and `overlay.warnings` from the inputs; notes about the
+    /// merge operation itself live in [`notes`](Self::notes).
+    pub output: BuildOutput<A>,
+    /// Advisory notes about the merge: overrides, unbinds, and dropped sequences.
+    /// Never mixed into [`output.warnings`](BuildOutput::warnings).
+    pub notes: Vec<MergeNote>,
+}
+
+/// An advisory note emitted by [`merge`].
+///
+/// All variants are display/audit information only; none indicate an error or
+/// require action from the caller.
+///
+/// This is `#[non_exhaustive]` — future additive merge operations may add
+/// further note kinds without a breaking change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MergeNote {
+    /// The overlay bound `chord` in `layer`, overriding an existing binding in
+    /// the base. `chord` is in canonical form (e.g. `"ctrl+s"`).
+    Overrode {
+        /// The layer name in which the override occurred.
+        layer: String,
+        /// The chord that was overridden, in canonical form.
+        chord: String,
+    },
+    /// The overlay declared `chord` in `layer` as a tombstone (`= false`), and
+    /// the chord was removed from the base layer. `chord` is in canonical form.
+    Unbound {
+        /// The layer name from which the chord was removed.
+        layer: String,
+        /// The removed chord, in canonical form.
+        chord: String,
+    },
+    /// The overlay's `unbinds` contained a tombstone for `chord` in `layer`,
+    /// but the base had no binding for that chord — the tombstone was a no-op.
+    UnbindMiss {
+        /// The layer name.
+        layer: String,
+        /// The chord that was not found in the base, in canonical form.
+        chord: String,
+    },
+    /// A sequence from the base was dropped because it shared a prefix with a
+    /// sequence in the overlay (the overlay's sequence takes priority). The
+    /// dropped sequence's chords are one canonical string per key.
+    DroppedSequence {
+        /// The chords of the dropped base sequence, one canonical string per key.
+        sequence: Vec<String>,
+    },
+}
+
+/// Merges a `base` (defaults) [`BuildOutput`] with an `overlay` (user config)
+/// [`BuildOutput`], returning the combined result with advisory notes.
+///
+/// ## Merge semantics
+///
+/// - **Layers**: the layer sets are unioned. For each layer name present in
+///   both `base` and `overlay`, bindings are merged chord-by-chord: the overlay
+///   chord wins silently (it is the user's override). A [`MergeNote::Overrode`]
+///   is emitted for each overridden chord.
+/// - **Tombstones** (`overlay.unbinds`): for each chord listed as an unbind in
+///   the overlay, the chord is removed from the corresponding base layer (if
+///   present). A [`MergeNote::Unbound`] note is emitted for successful removals;
+///   [`MergeNote::UnbindMiss`] when the chord was absent from the base.
+/// - **Sequences**: the overlay's sequences are folded into the base's. An
+///   exact-match sequence in the overlay silently replaces the base's. A sequence
+///   in the overlay that is a prefix of (or is prefixed by) a sequence in the
+///   base causes the base sequence to be dropped; a [`MergeNote::DroppedSequence`]
+///   note is emitted.
+/// - **Warnings**: the merged `output.warnings` is the concatenation of
+///   `base.warnings` and `overlay.warnings`. Merge notes go to `notes`, never
+///   to `output.warnings`.
+///
+/// Override operations are intentionally silent in `output.warnings` so that a
+/// caller gating on `output.warnings.is_empty()` (deny-warnings mode) is not
+/// triggered by the user legitimately overriding a default binding.
+///
+/// ## Bound: `A: Clone`
+///
+/// `merge` requires `A: Clone` because it copies actions from the overlay
+/// into the merged map. [`SequenceKeymap::bindings`] yields shared references
+/// only (there is no by-value iterator), so cloning is the only way to move
+/// sequence actions across maps without unsafe code. This bound is on `merge`
+/// alone and is not propagated to any core type.
+#[must_use]
+pub fn merge<A: Clone>(mut base: BuildOutput<A>, overlay: BuildOutput<A>) -> Merged<A> {
+    let mut notes: Vec<MergeNote> = Vec::new();
+
+    // Merge warnings: base first, then overlay.
+    base.warnings.extend(overlay.warnings);
+
+    // ── Tombstones ────────────────────────────────────────────────────────────
+    // Apply overlay.unbinds to base.layers before merging bindings, so an
+    // overlay that both unbinds and re-binds a chord gets a clean slate.
+    for (layer_name, chords) in &overlay.unbinds {
+        for chord in chords {
+            let removed = base
+                .layers
+                .get_mut(layer_name)
+                .and_then(|layer| layer.unbind(chord));
+            if removed.is_some() {
+                notes.push(MergeNote::Unbound {
+                    layer: layer_name.clone(),
+                    chord: chord.to_string(),
+                });
+            } else {
+                notes.push(MergeNote::UnbindMiss {
+                    layer: layer_name.clone(),
+                    chord: chord.to_string(),
+                });
+            }
+        }
+    }
+
+    // ── Layer bindings ────────────────────────────────────────────────────────
+    // Move actions from the overlay layers into the base. `Keymap` exposes no
+    // by-value iterator, so we use `iter()` to collect chord keys, then `unbind`
+    // to take ownership of each action (moving, not cloning, for layer data).
+    for (layer_name, overlay_keymap) in overlay.layers {
+        let base_layer = base.layers.entry(layer_name.clone()).or_default();
+
+        // Collect chords first (immutable borrow), then drain by value.
+        let keys: Vec<KeyInput> = overlay_keymap.iter().map(|(k, _)| *k).collect();
+        let mut owned_overlay = overlay_keymap;
+        for chord in keys {
+            if base_layer.contains(&chord) {
+                notes.push(MergeNote::Overrode {
+                    layer: layer_name.clone(),
+                    chord: chord.to_string(),
+                });
+            }
+            if let Some(action) = owned_overlay.unbind(&chord) {
+                base_layer.bind(chord, action);
+            }
+        }
+    }
+
+    // ── Sequences ─────────────────────────────────────────────────────────────
+    // Fold overlay sequences into the base. `SequenceKeymap::bindings` yields
+    // `(Vec<KeyInput>, &A)` — shared references only; `A: Clone` is required
+    // to copy actions across maps (documented in the function's bound).
+    //
+    // Strategy: collect all overlay (path, action) pairs first (cloning), then
+    // bind each into the base. `SequenceKeymap::bind` returns `Err(PrefixShadow)`
+    // when the new entry would conflict with an existing one in the *base*. In
+    // that case, drop the conflicting base sequence and retry.
+    let overlay_seqs: Vec<(Vec<KeyInput>, A)> = overlay
+        .sequences
+        .bindings()
+        .map(|(path, action)| (path.clone(), action.clone()))
+        .collect();
+
+    for (path, action) in overlay_seqs {
+        use keymap_seq::SeqBindError;
+        // Retry loop: on each `PrefixShadow` we drop the conflicting base
+        // sequence and retry until the bind succeeds (or a non-shadow error).
+        while let Err(SeqBindError::PrefixShadow { sequence, conflict }) =
+            base.sequences.bind(path.iter().copied(), action.clone())
+        {
+            // The conflicting path in the base must be dropped.
+            let victim = if sequence == path { conflict } else { sequence };
+            notes.push(MergeNote::DroppedSequence {
+                sequence: render_sequence(&victim),
+            });
+            // Remove the victim from the base so the retry can succeed.
+            // `SequenceKeymap` has no `unbind`; rebuild by collecting
+            // all remaining bindings and starting fresh.
+            let remaining: Vec<(Vec<KeyInput>, A)> = base
+                .sequences
+                .bindings()
+                .filter(|(p, _)| *p != victim.as_slice())
+                .map(|(p, a)| (p.clone(), a.clone()))
+                .collect();
+            base.sequences = SequenceKeymap::new();
+            for (p, a) in remaining {
+                // These were already valid (prefix-free among themselves),
+                // so bind should not fail. Silently drop on error (should
+                // not occur).
+                let _ = base.sequences.bind(p.iter().copied(), a);
+            }
+        }
+    }
+
+    Merged {
+        output: base,
+        notes,
+    }
 }
 
 /// Renders one keymap as a `chord -> action name` [`toml::Table`]. A `toml` table
@@ -1577,9 +2006,9 @@ mod tests {
         let layered = to_toml_layered(&layers, &seq, |a: &String| Some(a.as_str()));
         assert_eq!(plain, layered);
         // And an empty global-only set emits the empty string, like `to_toml`.
-        let empty: BTreeMap<String, Keymap<String>> = BTreeMap::new();
+        let empty_layers: BTreeMap<String, Keymap<String>> = BTreeMap::new();
         assert_eq!(
-            to_toml_layered(&empty, &SequenceKeymap::new(), |a: &String| Some(
+            to_toml_layered(&empty_layers, &SequenceKeymap::new(), |a: &String| Some(
                 a.as_str()
             )),
             ""
@@ -1606,5 +2035,415 @@ mod tests {
         );
         let out = from_str(&toml, |name: &str| Some(name.to_owned())).unwrap();
         assert_eq!(out.layers.keys().collect::<Vec<_>>(), vec![GLOBAL_LAYER]);
+    }
+
+    // ─── chord tombstone (= false) tests ───────────────────────────────────────
+
+    /// In 0.1.0 `"chord" = false` produced a `BuildError::Toml`. This test
+    /// pins that it is now `Allowed` (returns a `BuildOutput`, not an error)
+    /// and the chord lands in `unbinds`, not in the keymap.
+    #[test]
+    fn tombstone_false_was_build_error_in_0_1_0_now_accepted() {
+        // The key fact: this used to error; it now succeeds.
+        let toml = "[keys]\n\"ctrl+q\" = false\n";
+        let out = from_str(toml, resolver).unwrap();
+        // The chord is NOT in the keymap.
+        let q = KeyInput::new(Key::Char('q'), Modifiers::CTRL);
+        assert_eq!(out.global().get(&q), None);
+        // The chord IS in unbinds.
+        let global_unbinds = out
+            .unbinds
+            .get(GLOBAL_LAYER)
+            .expect("global unbinds present");
+        assert!(global_unbinds.contains(&q));
+        // No warnings: tombstones are silent.
+        assert!(out.warnings.is_empty());
+    }
+
+    /// `"chord" = true` remains a `BuildError::InvalidTombstone`.
+    #[test]
+    fn tombstone_true_is_still_an_error() {
+        let toml = "[keys]\n\"ctrl+q\" = true\n";
+        let err = from_str(toml, resolver).unwrap_err();
+        assert!(
+            matches!(err, BuildError::InvalidTombstone { .. }),
+            "expected InvalidTombstone, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn tombstone_in_named_layer_lands_in_unbinds_not_keymap() {
+        let toml = "[layers.panel]\n\"ctrl+s\" = false\n";
+        let out = from_str(toml, resolver).unwrap();
+        let s = KeyInput::new(Key::Char('s'), Modifiers::CTRL);
+        assert!(out.layers["panel"].is_empty());
+        let panel_unbinds = out.unbinds.get("panel").expect("panel unbinds present");
+        assert!(panel_unbinds.contains(&s));
+    }
+
+    #[test]
+    fn tombstone_coexists_with_bindings_in_same_layer() {
+        // A layer can have both a binding and a tombstone.
+        let toml = "[keys]\n\"ctrl+q\" = \"quit\"\n\"ctrl+s\" = false\n";
+        let out = from_str(toml, resolver).unwrap();
+        let q = KeyInput::new(Key::Char('q'), Modifiers::CTRL);
+        let s = KeyInput::new(Key::Char('s'), Modifiers::CTRL);
+        assert_eq!(out.global().get(&q), Some(&Action::Quit));
+        assert_eq!(out.global().get(&s), None);
+        let global_unbinds = out.unbinds.get(GLOBAL_LAYER).unwrap();
+        assert!(global_unbinds.contains(&s));
+    }
+
+    #[test]
+    fn empty_config_has_empty_unbinds() {
+        // Configs with no tombstones have an empty unbinds map.
+        let out: BuildOutput<Action> =
+            from_str("[keys]\n\"ctrl+q\" = \"quit\"\n", resolver).unwrap();
+        assert!(out.unbinds.is_empty());
+    }
+
+    // ─── to_toml_layered tombstone round-trip tests ─────────────────────────
+
+    /// When `unbinds` is empty, `to_toml_layered_with_unbinds` is byte-identical
+    /// to `to_toml_layered` — this pins that the additive version does not change
+    /// the output for callers that never use tombstones.
+    #[test]
+    fn to_toml_layered_with_empty_unbinds_matches_0_1_0_behavior() {
+        let mut global = Keymap::new();
+        global.bind(norm(Key::Char('q'), Modifiers::CTRL), "quit".to_owned());
+        let mut layers = BTreeMap::new();
+        layers.insert(GLOBAL_LAYER.to_string(), global.clone());
+        let seq = SequenceKeymap::new();
+        let empty_unbinds: BTreeMap<String, Vec<KeyInput>> = BTreeMap::new();
+
+        let plain = to_toml_layered(&layers, &seq, |a: &String| Some(a.as_str()));
+        let with_empty =
+            to_toml_layered_with_unbinds(&layers, &seq, &empty_unbinds, |a: &String| {
+                Some(a.as_str())
+            });
+        assert_eq!(
+            plain, with_empty,
+            "empty unbinds must produce byte-identical output to to_toml_layered"
+        );
+    }
+
+    #[test]
+    fn to_toml_layered_emits_tombstones_and_round_trips() {
+        // A tombstone in the global layer round-trips through to_toml_layered →
+        // from_str and appears again in unbinds.
+        let global: Keymap<String> = Keymap::new(); // nothing bound
+        let mut layers = BTreeMap::new();
+        layers.insert(GLOBAL_LAYER.to_string(), global);
+
+        let ctrl_s = norm(Key::Char('s'), Modifiers::CTRL);
+        let mut unbinds: BTreeMap<String, Vec<KeyInput>> = BTreeMap::new();
+        unbinds.insert(GLOBAL_LAYER.to_string(), vec![ctrl_s]);
+
+        let toml_str = to_toml_layered_with_unbinds(
+            &layers,
+            &SequenceKeymap::new(),
+            &unbinds,
+            |a: &String| Some(a.as_str()),
+        );
+        // The tombstone must appear in the output.
+        assert!(
+            toml_str.contains("false"),
+            "tombstone must be emitted as `= false`:\n{toml_str}"
+        );
+        // Round-trip: parsing the emitted TOML recovers the unbind.
+        let out = from_str(&toml_str, |name: &str| Some(name.to_owned())).unwrap();
+        let global_unbinds = out
+            .unbinds
+            .get(GLOBAL_LAYER)
+            .expect("global unbinds present");
+        assert!(global_unbinds.contains(&ctrl_s));
+        assert!(out.warnings.is_empty());
+    }
+
+    #[test]
+    fn to_toml_layered_tombstone_injection_safe() {
+        // A chord whose string representation contains TOML metacharacters must
+        // not be able to inject extra entries. The tombstone is emitted via
+        // `toml::Value::Boolean(false)` — the same injection-safe path as strings.
+        // This test uses a space chord (which emits as `" "`) to exercise quoting.
+        let space = norm(Key::Char(' '), Modifiers::NONE);
+        let layers: BTreeMap<String, Keymap<String>> = BTreeMap::new();
+        let mut unbinds: BTreeMap<String, Vec<KeyInput>> = BTreeMap::new();
+        unbinds.insert(GLOBAL_LAYER.to_string(), vec![space]);
+
+        let toml_str = to_toml_layered_with_unbinds(
+            &layers,
+            &SequenceKeymap::new(),
+            &unbinds,
+            |a: &String| Some(a.as_str()),
+        );
+        // Must round-trip cleanly (no injection = no parse error).
+        let out = from_str(&toml_str, |name: &str| Some(name.to_owned())).unwrap();
+        let global_unbinds = out
+            .unbinds
+            .get(GLOBAL_LAYER)
+            .expect("global unbinds present");
+        assert!(global_unbinds.contains(&space));
+    }
+
+    // ─── merge tests ─────────────────────────────────────────────────────────
+
+    fn make_output(toml: &str) -> BuildOutput<String> {
+        from_str(toml, |name: &str| Some(name.to_owned())).unwrap()
+    }
+
+    #[test]
+    fn merge_overlay_chord_wins_silently_with_override_note() {
+        let base = make_output("[keys]\n\"ctrl+s\" = \"save_base\"\n");
+        let overlay = make_output("[keys]\n\"ctrl+s\" = \"save_overlay\"\n");
+        let merged = merge(base, overlay);
+
+        let s = norm(Key::Char('s'), Modifiers::CTRL);
+        assert_eq!(
+            merged.output.global().get(&s),
+            Some(&"save_overlay".to_owned()),
+            "overlay wins"
+        );
+        assert!(
+            merged.output.warnings.is_empty(),
+            "override must not produce a Warning"
+        );
+        assert!(
+            merged.notes.iter().any(|n| matches!(n,
+                MergeNote::Overrode { layer, chord }
+                if layer == GLOBAL_LAYER && chord == "ctrl+s"
+            )),
+            "Overrode note must be emitted: {:?}",
+            merged.notes
+        );
+    }
+
+    #[test]
+    fn merge_layer_union_adds_layers_from_overlay() {
+        let base = make_output("[keys]\n\"ctrl+q\" = \"quit\"\n");
+        let overlay = make_output("[layers.panel]\n\"ctrl+s\" = \"split\"\n");
+        let merged = merge(base, overlay);
+
+        assert!(
+            merged.output.layers.contains_key("panel"),
+            "panel layer added"
+        );
+        let s = norm(Key::Char('s'), Modifiers::CTRL);
+        assert_eq!(
+            merged.output.layers["panel"].get(&s),
+            Some(&"split".to_owned())
+        );
+        assert!(
+            merged.notes.is_empty(),
+            "no notes for pure add: {:?}",
+            merged.notes
+        );
+    }
+
+    #[test]
+    fn merge_sequence_exact_overlay_wins() {
+        let base =
+            make_output("[[sequences]]\nkeys = [\"ctrl+x\", \"ctrl+s\"]\naction = \"save_base\"\n");
+        let overlay = make_output(
+            "[[sequences]]\nkeys = [\"ctrl+x\", \"ctrl+s\"]\naction = \"save_overlay\"\n",
+        );
+        let merged = merge(base, overlay);
+
+        let xs = vec![
+            norm(Key::Char('x'), Modifiers::CTRL),
+            norm(Key::Char('s'), Modifiers::CTRL),
+        ];
+        assert_eq!(
+            merged.output.sequences.lookup(&xs),
+            keymap_seq::Match::Exact(&"save_overlay".to_owned()),
+            "overlay sequence wins"
+        );
+        assert!(merged.output.warnings.is_empty());
+    }
+
+    #[test]
+    fn merge_sequence_prefix_clash_drops_base_with_note() {
+        // Base has `g g`; overlay has `g`. The overlay's shorter sequence is a
+        // prefix of the base's longer one. The base sequence is dropped.
+        let base = make_output("[[sequences]]\nkeys = [\"g\", \"g\"]\naction = \"top_base\"\n");
+        let overlay = make_output("[[sequences]]\nkeys = [\"g\"]\naction = \"top_overlay\"\n");
+        let merged = merge(base, overlay);
+
+        let g = vec![norm(Key::Char('g'), Modifiers::NONE)];
+        assert_eq!(
+            merged.output.sequences.lookup(&g),
+            keymap_seq::Match::Exact(&"top_overlay".to_owned()),
+            "overlay wins"
+        );
+        assert!(
+            merged
+                .notes
+                .iter()
+                .any(|n| matches!(n, MergeNote::DroppedSequence { .. })),
+            "DroppedSequence note must be emitted: {:?}",
+            merged.notes
+        );
+    }
+
+    #[test]
+    fn merge_unbind_removes_from_base_with_unbound_note() {
+        let base = make_output("[keys]\n\"ctrl+s\" = \"save\"\n");
+        let overlay = make_output("[keys]\n\"ctrl+s\" = false\n");
+        let merged = merge(base, overlay);
+
+        let s = norm(Key::Char('s'), Modifiers::CTRL);
+        assert_eq!(
+            merged.output.global().get(&s),
+            None,
+            "chord removed from base"
+        );
+        assert!(
+            merged.notes.iter().any(|n| matches!(n,
+                MergeNote::Unbound { layer, chord }
+                if layer == GLOBAL_LAYER && chord == "ctrl+s"
+            )),
+            "Unbound note must be emitted: {:?}",
+            merged.notes
+        );
+        assert!(merged.output.warnings.is_empty());
+    }
+
+    #[test]
+    fn merge_unbind_of_absent_chord_produces_miss_note() {
+        let base = make_output("[keys]\n\"ctrl+q\" = \"quit\"\n");
+        let overlay = make_output("[keys]\n\"ctrl+s\" = false\n");
+        let merged = merge(base, overlay);
+
+        assert!(
+            merged.notes.iter().any(|n| matches!(n,
+                MergeNote::UnbindMiss { chord, .. }
+                if chord == "ctrl+s"
+            )),
+            "UnbindMiss note expected: {:?}",
+            merged.notes
+        );
+        // The present binding is untouched.
+        let q = norm(Key::Char('q'), Modifiers::CTRL);
+        assert_eq!(merged.output.global().get(&q), Some(&"quit".to_owned()));
+    }
+
+    #[test]
+    fn merge_warnings_are_concatenated_not_mixed_into_notes() {
+        // Both base and overlay have warnings (unknown action names); they must
+        // appear in output.warnings, not in notes. Use `resolver` which only
+        // knows "quit"/"save"/"split"/"top" so "nope_*" is an UnknownAction.
+        let base = from_str("[keys]\n\"ctrl+z\" = \"nope_base\"\n", resolver).unwrap();
+        let overlay = from_str("[keys]\n\"ctrl+y\" = \"nope_overlay\"\n", resolver).unwrap();
+        assert_eq!(base.warnings.len(), 1);
+        assert_eq!(overlay.warnings.len(), 1);
+        let merged = merge(base, overlay);
+
+        assert_eq!(merged.output.warnings.len(), 2, "both warnings carried");
+        assert!(merged.notes.is_empty());
+    }
+
+    // ─── WarningKind + Display for Warning (S5) ──────────────────────────────
+
+    /// Every `Warning` variant maps to the corresponding `WarningKind` variant with
+    /// no gaps — the table below pins the 1-to-1 correspondence.
+    #[test]
+    fn warning_kind_covers_all_variants() {
+        let conflict = Warning::Conflict {
+            chord: "ctrl+a".to_string(),
+            contenders: vec!["quit".to_string(), "save".to_string()],
+            winner: "save".to_string(),
+        };
+        assert_eq!(conflict.kind(), WarningKind::Conflict);
+
+        let unknown = Warning::UnknownAction {
+            key: "ctrl+z".to_string(),
+            action: "undo".to_string(),
+        };
+        assert_eq!(unknown.kind(), WarningKind::UnknownAction);
+
+        let prefix = Warning::PrefixShadow {
+            prefix: vec!["g".to_string()],
+            prefix_action: "top".to_string(),
+            shadowed: vec!["g".to_string(), "g".to_string()],
+            shadowed_action: "top2".to_string(),
+        };
+        assert_eq!(prefix.kind(), WarningKind::PrefixShadow);
+
+        let empty = Warning::EmptySequence {
+            action: "quit".to_string(),
+        };
+        assert_eq!(empty.kind(), WarningKind::EmptySequence);
+
+        let shadow = Warning::SequenceShadow {
+            chord: "j".to_string(),
+            chord_action: "down".to_string(),
+            sequence: vec!["j".to_string(), "k".to_string()],
+            sequence_action: "top".to_string(),
+        };
+        assert_eq!(shadow.kind(), WarningKind::SequenceShadow);
+    }
+
+    /// Display output is non-empty, human-readable, and contains the key field
+    /// for each variant. Does not assert exact format (format is not stable), but
+    /// checks the load-bearing content the user would need to read.
+    #[test]
+    fn warning_display_is_human_readable() {
+        let conflict = Warning::Conflict {
+            chord: "ctrl+a".to_string(),
+            contenders: vec!["quit".to_string(), "save".to_string()],
+            winner: "save".to_string(),
+        };
+        let s = conflict.to_string();
+        assert!(
+            s.contains("ctrl+a"),
+            "conflict display must mention the chord: {s}"
+        );
+        assert!(
+            s.contains("save"),
+            "conflict display must mention the winner: {s}"
+        );
+
+        let unknown = Warning::UnknownAction {
+            key: "ctrl+z".to_string(),
+            action: "undo".to_string(),
+        };
+        let s = unknown.to_string();
+        assert!(
+            s.contains("undo"),
+            "unknown-action display must mention the action: {s}"
+        );
+
+        let prefix = Warning::PrefixShadow {
+            prefix: vec!["g".to_string()],
+            prefix_action: "top".to_string(),
+            shadowed: vec!["g".to_string(), "g".to_string()],
+            shadowed_action: "top2".to_string(),
+        };
+        let s = prefix.to_string();
+        assert!(
+            !s.is_empty(),
+            "prefix-shadow display must not be empty: {s}"
+        );
+
+        let empty_seq = Warning::EmptySequence {
+            action: "quit".to_string(),
+        };
+        let s = empty_seq.to_string();
+        assert!(
+            s.contains("quit"),
+            "empty-sequence display must mention the action: {s}"
+        );
+
+        let shadow = Warning::SequenceShadow {
+            chord: "j".to_string(),
+            chord_action: "down".to_string(),
+            sequence: vec!["j".to_string(), "k".to_string()],
+            sequence_action: "top".to_string(),
+        };
+        let s = shadow.to_string();
+        assert!(
+            s.contains('j'),
+            "sequence-shadow display must mention the chord: {s}"
+        );
     }
 }
