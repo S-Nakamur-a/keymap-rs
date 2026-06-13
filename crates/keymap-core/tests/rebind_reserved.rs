@@ -14,7 +14,10 @@
 //! - **resolution survival**: simulate the rebind in a clone, then re-resolve
 //!   every reserved key against the *composed* layer stack; refuse if any changes.
 
-use keymap_core::{Key, KeyInput, Keymap, LegacyForm, Modifiers, resolve_layered};
+use keymap_core::{
+    BreakReason, Key, KeyInput, Keymap, LegacyForm, Modifiers, RebindVerdict, resolve_layered,
+    validate_rebind,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
@@ -171,6 +174,115 @@ fn validation_does_not_mutate_the_live_keymap() {
     // The reserved key is still unbound in the live map.
     assert_eq!(global.get(&esc()), None);
     assert!(global.is_empty());
+}
+
+/// `validate_rebind` (virtual overlay, no clone) must agree with `would_break_escape`
+/// (clone-simulate) for every **distinct-action** case in a representative matrix.
+///
+/// The one intentional divergence — re-binding a reserved key to its *same* action —
+/// is excluded here and pinned separately below: `would_break_escape` permits it
+/// (resolution unchanged), while `validate_rebind` refuses it (strict, no A:PartialEq
+/// bound). Mixing it in would produce a false equivalence failure.
+#[test]
+fn validate_rebind_and_clone_simulate_agree_on_distinct_action_matrix() {
+    // Matrix axes:
+    //   proposed    : ctrl+s (ordinary), esc (reserved direct steal), ctrl+i (legacy collapse to tab)
+    //   layers      : single-layer empty, single-layer with esc bound, two-layer overlay+base
+    //   reserved set: [esc], [esc, tab]
+    //
+    // For each combination, the distinct action is always Action::Save (never the
+    // existing action on the reserved key itself).
+
+    let proposed_ordinary = ctrl('s');
+    let proposed_reserved = esc();
+    let proposed_collapse = KeyInput::new(Key::Char('i'), Modifiers::CTRL); // ctrl+i -> tab
+
+    let reserved_esc: &[KeyInput] = &[esc()];
+    let reserved_esc_tab: &[KeyInput] = &[esc(), KeyInput::new(Key::Tab, Modifiers::NONE)];
+
+    // Helper: run both methods and assert they agree. distinct_action must differ
+    // from any action already on the reserved key, so the same-action divergence
+    // path is never hit.
+    let assert_agree = |layers: &[&Keymap<Action>],
+                        target: usize,
+                        proposed: KeyInput,
+                        reserved: &[KeyInput]| {
+        let clone_result = would_break_escape(layers, target, proposed, Action::Save, reserved);
+        let vr = validate_rebind(layers, target, proposed, reserved);
+        let vr_blocks = matches!(
+            vr,
+            RebindVerdict::BreaksReserved {
+                reason: BreakReason::DirectSteal,
+                ..
+            } | RebindVerdict::BreaksReserved {
+                reason: BreakReason::LegacyCollapse,
+                ..
+            }
+        );
+        assert_eq!(
+            clone_result, vr_blocks,
+            "disagreement: proposed={proposed}, reserved={reserved:?}, clone={clone_result}, validate={vr_blocks}"
+        );
+    };
+
+    // ── single empty layer ──
+    let empty: Keymap<Action> = Keymap::new();
+
+    assert_agree(&[&empty], 0, proposed_ordinary, reserved_esc);
+    assert_agree(&[&empty], 0, proposed_reserved, reserved_esc);
+    assert_agree(&[&empty], 0, proposed_collapse, reserved_esc_tab);
+
+    // ── single layer with esc bound to Quit ──
+    let mut with_esc = Keymap::new();
+    with_esc.bind(esc(), Action::Quit);
+
+    assert_agree(&[&with_esc], 0, proposed_ordinary, reserved_esc);
+    // proposed_reserved with distinct action Save != Quit: clone sees resolution change,
+    // validate_rebind refuses both. They must agree.
+    assert_agree(&[&with_esc], 0, proposed_reserved, reserved_esc);
+    assert_agree(&[&with_esc], 0, proposed_collapse, reserved_esc_tab);
+
+    // ── two-layer: overlay empty, base has esc bound ──
+    let overlay: Keymap<Action> = Keymap::new();
+    let mut base = Keymap::new();
+    base.bind(esc(), Action::Quit);
+
+    // Rebind into overlay (upper): steals esc resolution.
+    assert_agree(&[&overlay, &base], 0, proposed_ordinary, reserved_esc);
+    assert_agree(&[&overlay, &base], 0, proposed_reserved, reserved_esc);
+    assert_agree(&[&overlay, &base], 0, proposed_collapse, reserved_esc_tab);
+
+    // Rebind into base (lower): esc is already in overlay, so base rebind is
+    // shielded — both methods should report NOT blocked for proposed_reserved here
+    // only when overlay has esc bound. Adjust: overlay has esc, base doesn't.
+    let mut overlay2 = Keymap::new();
+    overlay2.bind(esc(), Action::Quit);
+    let base2: Keymap<Action> = Keymap::new();
+
+    assert_agree(&[&overlay2, &base2], 1, proposed_ordinary, reserved_esc);
+    assert_agree(&[&overlay2, &base2], 1, proposed_reserved, reserved_esc);
+    assert_agree(&[&overlay2, &base2], 1, proposed_collapse, reserved_esc_tab);
+}
+
+/// The intentional divergence (same-action re-bind onto reserved):
+/// `would_break_escape` permits it (resolution unchanged); `validate_rebind` refuses it.
+/// This test pins that difference as an explicit specification fact.
+#[test]
+fn validate_rebind_and_clone_simulate_diverge_on_same_action_rebind() {
+    let mut global: Keymap<Action> = Keymap::new();
+    global.bind(esc(), Action::Quit);
+    let reserved = [esc()];
+
+    // Clone-simulate: resolution is unchanged (Quit -> Quit), so it is allowed.
+    let clone_result = would_break_escape(&[&global], 0, esc(), Action::Quit, &reserved);
+    assert!(!clone_result, "clone-simulate permits same-action rebind");
+
+    // validate_rebind: strict, refuses regardless of existing action.
+    let vr = validate_rebind(&[&global], 0, esc(), &reserved);
+    assert!(
+        matches!(vr, RebindVerdict::BreaksReserved { .. }),
+        "validate_rebind refuses same-action rebind onto reserved"
+    );
 }
 
 #[test]

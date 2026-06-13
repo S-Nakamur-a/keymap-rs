@@ -1,0 +1,19 @@
+[package]
+name = "keymap-showcase"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "A 5-value showcase and measurement app for keymap-rs; not published."
+publish = false
+
+[dependencies]
+keymap-suite = { path = "../keymap-suite", features = ["crossterm"] }
+keymap-term  = { path = "../keymap-term" }
+crossterm    = { workspace = true }
+ratatui      = { workspace = true }
+
+[lints]
+workspace = true

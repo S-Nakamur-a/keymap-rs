@@ -2,14 +2,15 @@
 //!
 //! Shows the intended split: `keymap-seq` answers "exact / prefix / miss" for the
 //! keys so far, and the *caller* owns the pending buffer and decides when to fire
-//! or reset. The second demo (`timed`) adds the time dimension a `jj`-style
-//! binding needs — still entirely caller-side, because the library holds no clock.
+//! or reset. The second demo (`timed`) uses [`TimedPending`] to add the time
+//! dimension a `jj`-style binding needs — the library holds no clock, so `now` is
+//! caller-supplied data.
 //! Run with `cargo run -p keymap-seq --example leader_sequence`.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use keymap_core::{Key, KeyInput, Modifiers};
-use keymap_seq::{Match, PendingSequence, SequenceKeymap, Step};
+use keymap_seq::{Match, SequenceKeymap, Step, TimedPending};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
@@ -71,88 +72,61 @@ fn untimed() {
     }
 }
 
-/// `jj`-style time window, driven through [`PendingSequence`]. The window —
-/// "abandon a pending prefix if the next key is too slow" — is the *caller's*
-/// policy, not the table's: `keymap-seq` has no clock, so the caller measures
-/// inter-key time and decides when a prefix is stale. The helper owns the buffer
-/// bookkeeping; the caller owns only the timing decision and the one `flush` call
-/// it triggers.
+/// `jj`-style time window using [`TimedPending`].
 ///
-/// Note what this demo does *not* do: real vim `jj` also binds `j` on its own (a
-/// literal cursor move), so a lone `j` must fire while a quick `j j` escapes. That
-/// needs both `j` *and* `[j, j]` bound — which the prefix-free invariant forbids
-/// (`bind` would reject it with `PrefixShadow`). Resolving "is this `j` a literal
-/// or the first half of `jj`?" is therefore caller timing policy layered on top
-/// of `lookup`, not a trie outcome. Here `j` alone is unbound, so the timeout is
-/// the *only* caller policy needed.
+/// [`TimedPending`] bundles the expiry check, flush, and new-key processing
+/// into a single `feed` call. The library still holds no clock — `now` is
+/// caller-supplied data (a `base + offset` pair here, so the demo is
+/// deterministic and never flaky).
 ///
-/// Unlike the raw-loop version this once was, the idle flush is *exercised*, not
-/// just described: a too-slow key abandons the held prefix (mid-stream), and the
-/// stream ends mid-prefix so the trailing `flush` drains the dangling `j` as a
-/// literal — the case a real caller's idle timer fires on when no further key
-/// arrives.
+/// Note what this demo does *not* do: real vim `jj` also binds `j` on its own
+/// (a literal cursor move). That needs both `j` *and* `[j, j]` bound — which
+/// the prefix-free invariant forbids (`bind` rejects it with `PrefixShadow`).
+/// Here `j` alone is unbound, so the timeout is the *only* caller policy needed.
 fn timed() {
     const WINDOW: Duration = Duration::from_millis(500);
 
-    println!("== timed (jj) ==");
+    println!("== timed (jj, via TimedPending) ==");
     let mut map = SequenceKeymap::new();
     map.bind([plain('j'), plain('j')], Action::NormalMode)
         .unwrap();
 
-    // `(key, timestamp-since-start)`: a deterministic stand-in for an event
-    // loop's clock (no real `Instant`/`sleep`, so the demo can't be flaky). We
-    // compare the *inter-key* gap to the window — the gap since the last key the
-    // pending prefix accepted, which is what "pressed twice quickly" means.
+    // Deterministic timestamps: base + offset (no real sleep / Instant::now).
+    let base = Instant::now();
     let stream = [
-        (plain('j'), Duration::from_millis(0)),
-        (plain('j'), Duration::from_millis(120)), // quick: completes `jj`
-        (plain('j'), Duration::from_millis(900)),
-        (plain('j'), Duration::from_millis(1700)), // 800ms gap: too slow
+        (plain('j'), 0u64),
+        (plain('j'), 120), // 120ms gap: quick, completes `jj`
+        (plain('j'), 900),
+        (plain('j'), 1700), // 800ms gap: too slow, expiry fires
     ];
 
-    let mut pending = PendingSequence::new();
-    let mut last: Option<Duration> = None;
-    for (key, now) in stream {
-        // Timeout check lives here, in the caller, before the new key is judged:
-        // a too-slow key means the held prefix was abandoned, so flush it (pass
-        // its keys through as literals) and let this key start fresh.
-        if let Some(prev) = last {
-            if now.saturating_sub(prev) > WINDOW && !pending.is_empty() {
-                let dropped = pending.flush();
-                println!(
-                    "{} @ {now:?} -> idle ({:?} gap > {WINDOW:?}), flushed as literals",
-                    render(&dropped),
-                    now.saturating_sub(prev),
-                );
-            }
+    let mut pending = TimedPending::new();
+    for (key, ms) in stream {
+        let now = base + Duration::from_millis(ms);
+        let result = pending.feed(&map, key, now, WINDOW);
+
+        // If a previous prefix expired, report its keys as literals first.
+        if let Some(expired) = result.expired {
+            println!(
+                "{} @ +{ms}ms -> idle timeout, flushed as literals",
+                render(&expired),
+            );
         }
 
-        // `last` tracks the time of the key that last extended a live prefix, so
-        // it is set solely by this resolution: only `Pending` leaves a prefix
-        // waiting on the clock.
-        last = match pending.feed(&map, key) {
-            Step::Fired(action) => {
-                println!("{key} @ {now:?} -> fire {action:?}");
-                None
-            }
-            Step::Pending => {
-                println!("{key} @ {now:?} -> prefix, waiting (window {WINDOW:?})");
-                Some(now)
-            }
+        match result.step {
+            Step::Fired(action) => println!("{key} @ +{ms}ms -> fire {action:?}"),
+            Step::Pending => println!("{key} @ +{ms}ms -> prefix, waiting (window {WINDOW:?})"),
             Step::PassThrough(keys) => {
-                println!("{} @ {now:?} -> no binding, passing through", render(&keys));
-                None
+                println!("{} @ +{ms}ms -> no binding, passing through", render(&keys));
             }
-        };
+        }
     }
 
-    // The stream ended mid-prefix. A real caller's idle timer would fire after the
-    // window with no further key; here we flush that dangling `j` as a literal —
-    // the step the old version of this example could only describe in a comment.
+    // The stream ended mid-prefix. Drain as literals (what an idle timer does).
     let dangling = pending.flush();
     if !dangling.is_empty() {
         println!(
-            "{} -> still pending at end; idle timer flushes it as a literal",
+            "{} -> pending at end; flushed as literals",
             render(&dangling)
         );
     }

@@ -43,7 +43,8 @@
 //!
 //! Each scenario above has a runnable counterpart under
 //! [`examples/`](https://github.com/S-Nakamur-a/keymap-rs/tree/main/crates/keymap-core/examples):
-//! `basic_lookup`, `modal_keymap`, `discovery`, `ex_command`. Run e.g.
+//! `basic_lookup`, `modal_keymap`, `discovery`, `ex_command`,
+//! `command_palette`. Run e.g.
 //! `cargo run -p keymap-core --example modal_keymap`. The examples are
 //! exercised by `cargo test --workspace`, so they cannot silently drift from
 //! the API.
@@ -52,11 +53,15 @@ mod input;
 mod keymap;
 mod legacy;
 mod passthrough;
+mod rebind;
+
+pub mod cmd;
 
 pub use input::{Key, KeyInput, Modifiers, ParseKeyInputError};
 pub use keymap::{Keymap, resolve_layered};
 pub use legacy::{LegacyForm, LegacyLint, legacy_lints};
 pub use passthrough::{RawInput, Resolution, resolve_passthrough};
+pub use rebind::{BreakReason, RebindVerdict, validate_rebind};
 
 #[cfg(feature = "crossterm")]
 pub use input::crossterm::UnsupportedKey;

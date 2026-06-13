@@ -8,11 +8,14 @@ A Cargo workspace of small Rust crates that turn key presses into your own actio
 
 - [Start here: `keymap-suite`](#start-here-keymap-suite)
 - [What it is, and the one rule](#what-it-is-and-the-one-rule)
+- [State ownership — what lives where](#state-ownership--what-lives-where)
+- [Layers: two separate concepts](#layers-two-separate-concepts)
 - [The crate map](#the-crate-map)
 - [Lookup: a miss is "pass through"](#lookup-a-miss-is-pass-through)
 - [Layered resolution: context without a context type](#layered-resolution-context-without-a-context-type)
 - [Multi-key sequences](#multi-key-sequences)
 - [Config: TOML in, warnings out](#config-toml-in-warnings-out)
+- [New in 0.1: five more capabilities](#new-in-01-five-more-capabilities)
 - [The measurement-first capability layer](#the-measurement-first-capability-layer)
 - [Build, test, and add it to your project](#build-test-and-add-it-to-your-project)
 
@@ -26,6 +29,8 @@ keymap-suite = "0.1"
 # Reading events through crossterm? Turn on the adapter:
 # keymap-suite = { version = "0.1", features = ["crossterm"] }
 ```
+
+The following example compiles and runs as-is:
 
 ```rust
 use keymap_suite::prelude::*;
@@ -59,35 +64,39 @@ keys   = ["ctrl+x", "ctrl+s"]   # a multi-key sequence
 action = "save"
 "#;
 
-// 3. The LIBRARY parses that into named layers + a sequence table.
-let loaded = keymap_suite::from_toml_str(SETTINGS, resolve)?;
-//  (Lenient by default; add `.deny_warnings()?` here to fail on conflicts/typos.)
+fn main() -> Result<(), keymap_suite::BuildError> {
+    // 3. The LIBRARY parses that into named layers + a sequence table.
+    let loaded = keymap_suite::from_toml_str(SETTINGS, resolve)?;
+    //  (Lenient by default; add `.deny_warnings()?` here to fail on conflicts/typos.)
 
-// 4. Per key event, YOU pick which layers are active from your own state, and
-//    the library resolves against that chain (earlier layers win). This is how
-//    "ctrl+p means OpenFile, but only when the panel is focused" is expressed:
-let key = chords::ctrl('p');               // normally KeyInput::try_from(a crossterm KeyEvent)
-let panel_focused = true;                  // ← your application state, not the library's
-let chain = if panel_focused {
-    vec![&loaded.layers["panel"], loaded.global()] // panel wins: ctrl+p -> OpenFile
-} else {
-    vec![loaded.global()]                          // global only:  ctrl+p -> CommandPalette
-};
-if let Some(action) = resolve_layered(chain.iter().copied(), &key) {
-    // run `action`
+    // 4. Per key event, YOU pick which layers are active from your own state, and
+    //    the library resolves against that chain (earlier layers win). This is how
+    //    "ctrl+p means OpenFile, but only when the panel is focused" is expressed:
+    let key = chords::ctrl('p');               // normally KeyInput::try_from(a crossterm KeyEvent)
+    let panel_focused = true;                  // ← your application state, not the library's
+    let chain: Vec<&Keymap<Action>> = if panel_focused {
+        vec![&loaded.layers["panel"], loaded.global()] // panel wins: ctrl+p -> OpenFile
+    } else {
+        vec![loaded.global()]                          // global only:  ctrl+p -> CommandPalette
+    };
+    if let Some(action) = resolve_layered(chain.iter().copied(), &key) {
+        println!("fire {action:?}");
+    }
+
+    // 5. Multi-key sequences: the library owns the trie, YOU own the pending buffer
+    //    and the inter-key timer.
+    let mut pending = loaded.pending_sequence();
+    match pending.feed(&loaded.sequences, key) {
+        Step::Fired(action)         => println!("seq fired: {action:?}"),
+        Step::Pending               => { /* (re)start your idle timer */ }
+        Step::PassThrough(literals) => println!("{} key(s) passed through", literals.len()),
+    }
+
+    // 6. Help screen / which-key: the reverse of resolution — which keys run this?
+    let save_keys = keys_for_action(loaded.global(), &Action::Save); // Vec<&KeyInput>
+    println!("{} chord(s) bound to Save", save_keys.len());
+    Ok(())
 }
-
-// 5. Multi-key sequences: the library owns the trie, YOU own the pending buffer
-//    and the inter-key timer.
-let mut pending = loaded.pending_sequence();
-match pending.feed(&loaded.sequences, key) {
-    Step::Fired(action)         => { /* run it */ }
-    Step::Pending               => { /* (re)start your idle timer */ }
-    Step::PassThrough(literals) => { /* forward these keys downstream */ }
-}
-
-// 6. Help screen / which-key: the reverse of resolution — which keys run this?
-let save_keys = keys_for_action(loaded.global(), &Action::Save); // Vec<&KeyInput>
 ```
 
 **You define / the library does.**
@@ -99,7 +108,9 @@ let save_keys = keys_for_action(loaded.global(), &Action::Save); // Vec<&KeyInpu
 | **Which layers are active this event** (focus / mode / popup) | Run the prefix-free sequence trie over your pending buffer |
 | The inter-key timer that abandons a half-typed sequence | Reverse-lookup `keys_for_action` for your help screen |
 
-The library never holds your mode or a clock — that is [the one rule](#what-it-is-and-the-one-rule). So a *single-chord* binding can be per-layer (the `ctrl+p` override above), but note that **multi-key sequences are global today** (`loaded.sequences` is one table, not per-layer): to scope a *sequence* to a context, gate it caller-side with the same focus check you already use for the layer chain. For the full walkthrough see the [`keymap-suite` README](crates/keymap-suite/README.md) and `cargo run -p keymap-suite --example load_and_resolve`.
+The library never holds your mode or a clock — that is [the one rule](#what-it-is-and-the-one-rule). For the full walkthrough see the [`keymap-suite` README](crates/keymap-suite/README.md) and `cargo run -p keymap-suite --example load_and_resolve`.
+
+> **Single-chord bindings are per-layer; multi-key sequences are global today.** To scope a sequence to a context, gate it caller-side with the same focus check you already use for the layer chain.
 
 ## What it is, and the one rule
 
@@ -112,7 +123,30 @@ That choice has a clear trade. You get a pure, testable core that never names yo
 
 The action type `A` is always caller-defined. `Keymap<A>` places no bound on `A` at all, so your action enum can be whatever your app needs, and the library never sees inside it.
 
-The design grew from four recurring pains in terminal UI work: configurable bindings with conflicts you can actually see, key reception that varies by terminal and environment, the constant passthrough-versus-consume decision, and binding discovery for which-key style menus. Each crate below addresses one of them.
+## State ownership — what lives where
+
+A recurring audit finding was "state-free sounds good, but what *exactly* do I own?" Here is the complete list:
+
+| You own | Why |
+| --- | --- |
+| The active layer chain for each event (`&[&Keymap<A>]`) | The library cannot know your focus / mode / popup state |
+| The pending multi-key buffer (`PendingSequence` or `TimedPending` as a struct field) | The library owns no buffer between calls |
+| The inter-key clock — `Instant::now()` passed into `TimedPending::feed(…, now, window)` | The library reads no clock; `now` is your data |
+| The reserved-key set passed to `validate_rebind` | The library does not decide which chords are reserved |
+| The command-line / palette text buffer (for `CommandIndex::complete`) | Input state is yours |
+| The decision to `deny_warnings()` or not | Strictness policy is caller-side |
+
+`TimedPending` (in `keymap-seq`, re-exported from the suite) wraps `PendingSequence` and stores the timestamp of the last key so you can compute `deadline(window) -> Option<Instant>` for feeding your event-loop poll timeout — but you still pass `now` in, the library reads no clock.
+
+## Layers: two separate concepts
+
+The word "layer" means two different things in this project, and mixing them up is a common source of confusion.
+
+**Config-layer** (build time): a named group of chord → action bindings in a TOML file. The bare `[keys]` table is always the `"global"` layer. Each `[layers.<name>]` table is a separate named layer. These are parsed by `keymap-config` / `from_toml_str` and stored in `Loaded::layers: BTreeMap<String, Keymap<A>>`. The names are opaque labels — the library never decides which layer is active.
+
+**Active stack** (runtime): the ordered list of `&Keymap<A>` you pass to `resolve_layered(layers, input)` each event. This is entirely your state: you assemble it from your UI context (focus, mode, popup) and hand it to the library. Earlier entries win; misses fall through to later entries.
+
+These are deliberately separate. You could have ten named config-layers and only ever activate two of them at once. You could build a `Keymap` entirely in code (no TOML) and use it as a layer. The library does not care — it sees only the slice you pass it.
 
 ## The crate map
 
@@ -301,7 +335,25 @@ The TOML shape is small. The `[keys]` table maps `"key" = "action"` for single c
 
 To serialize back, `to_toml(&keymap, &sequences, name_of) -> String` takes `name_of: FnMut(&A) -> Option<&str>` for a single keymap, and `to_toml_layered(&layers, &sequences, name_of)` does the same for a whole named-layer set (emitting `[keys]` for `"global"` and `[layers.<name>]` for the rest). Both are a semantic round-trip, not byte identity: chords come out in canonical form and sorted order, so the text may differ while the bindings match. The runnable version is `crates/keymap-config/examples/load_config.rs`.
 
-Legacy-terminal survivability is deliberately not a `Warning`, because it depends on the deployment terminal rather than the config's correctness. It is the opt-in `keymap_core::legacy_lints(out.global()) -> Vec<LegacyLint>` (run it per layer), where `LegacyLint { Unrepresentable { chord }, CollapsesTo { chord, collapses_to } }` flags a `super+…` chord a legacy terminal cannot deliver, or a chord like `ctrl+i` that collapses to `tab`. Callers gating on `warnings.is_empty()` are unaffected.
+Legacy-terminal survivability is deliberately not a `Warning`, because it depends on the deployment terminal rather than the config's correctness. It is the opt-in `keymap_suite::legacy_lints(out.global()) -> Vec<LegacyLint>` (run it per layer), where `LegacyLint { Unrepresentable { chord }, CollapsesTo { chord, collapses_to } }` flags a `super+…` chord a legacy terminal cannot deliver, or a chord like `ctrl+i` that collapses to `tab`. Callers gating on `warnings.is_empty()` are unaffected.
+
+## New in 0.1: five more capabilities
+
+These landed with 0.1 and are available from `keymap-suite` without extra dependencies. Each is 1–2 lines in your app for the common case; details in [`docs/STATUS.md`](docs/STATUS.md) and the respective crate docs.
+
+**Command palette** — `CommandIndex<A>` (in `keymap-core`, re-exported from suite root) provides `bind(name, action)`, `get(name) -> Option<&A>` for exact dispatch, and `complete(prefix) -> impl Iterator` for prefix-completion as the user types. No fuzzy matching, no separate crate.
+
+**Timeout-aware sequence buffer** — `TimedPending` (in `keymap-seq`, re-exported from suite) wraps `PendingSequence` and adds `deadline(window) -> Option<Instant>` so your event-loop poll timeout derives directly from the pending key rather than a hand-rolled variable. Feed it `(map, key, now, window)`.
+
+**Rebind safety validation** — `validate_rebind(&layers, target, proposed, &reserved) -> RebindVerdict` (in `keymap-core`, re-exported from suite root) checks whether a proposed chord collides with reserved keys — including legacy-terminal collisions that are not direct steals — before any live keymap mutation.
+
+**Defaults ⊕ user merge with tombstones** — `merge(base, overlay) -> Merged<A>` layers a user TOML over compiled-in defaults. In the overlay, `"ctrl+s" = false` is a tombstone that deletes the base binding. `to_toml_layered_with_unbinds` round-trips the tombstones so they survive save/reload. Override notes land in `Merged::notes` (not `Warning`), so `.deny_warnings()` is unaffected.
+
+**Warning ergonomics** — `Warning::kind() -> WarningKind` lets you match on `Conflict | UnknownAction | PrefixShadow | EmptySequence | SequenceShadow` without destructuring the full variant. `impl Display for Warning` gives a one-line human-readable string.
+
+**The showcase** — `crates/keymap-showcase` (`publish = false`) wires all five values in a single headless-testable reducer + thin ratatui shell. It is the project's first real consumer and its glue measurement: `docs/SHOWCASE.md` records the before/after line counts (after-glue ≈ 87 lines vs ≈ 160+ before). Run it with `cargo run -p keymap-showcase`.
+
+**Boilerplate tip: action name mapping with `strum`** — The `resolve` closure you write by hand can be replaced by [`strum`](https://crates.io/crates/strum) (`EnumString` + `AsRefStr`, `serialize_all = "snake_case"`), which derives `from_str` / `as_ref` for your `Action` enum. Add `strum = { version = "0.26", features = ["derive"] }` to your `Cargo.toml`, derive the two traits, and your `resolve` closure becomes `|name| name.parse::<Action>().ok()`. `keymap-rs` itself does not depend on strum; it is your choice.
 
 ## The measurement-first capability layer
 
@@ -332,6 +384,7 @@ Each crate's `examples/` directory is runnable documentation of its API:
 cargo run -p keymap-core --example modal_keymap
 cargo run -p keymap-config --example load_config
 cargo run -p keymap-seq --example leader_sequence
+cargo run -p keymap-showcase                     # 5-value interactive demo (real terminal)
 ```
 
 The optional `crossterm` backend adds `TryFrom<crossterm::event::KeyEvent> for KeyInput`, gated so a crossterm major bump is not a `keymap-core` major bump for default builds:

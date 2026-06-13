@@ -7,6 +7,23 @@ All notable changes to `keymap-seq` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-13
+
+All changes are **additive**; no existing public API is removed or altered.
+
+### Added
+
+- `TimedPending` — a `PendingSequence` wrapper that adds deadline-aware feeding.
+  `feed(map, key, now, window) -> TimedStep<'_, A>` advances the pending buffer
+  and applies the timeout automatically (flushing with `Step::PassThrough` if
+  `now` is past the deadline for the last-fed key). The library reads no clock —
+  `now: Instant` is caller-supplied, keeping the state-free contract intact.
+- `deadline(window: Duration) -> Option<Instant>` on `TimedPending` — returns the
+  `Instant` by which the pending prefix must be resolved; use it as the event-loop
+  poll timeout so the flush fires at the right moment.
+- `TimedStep<'_, A>` (`#[non_exhaustive]`) — the return type of `TimedPending::feed`,
+  mirroring `Step` but replacing `Step::Pending` with `TimedStep::Pending { deadline }`.
+
 ## [0.1.0] - 2026-05-28
 
 ### Added
@@ -25,4 +42,5 @@ All notable changes to `keymap-seq` are recorded here. The format follows
   caller-side; the table itself holds no clock.
 
 [Unreleased]: https://github.com/S-Nakamur-a/keymap-rs/commits/main
+[0.1.1]: https://crates.io/crates/keymap-seq/0.1.1
 [0.1.0]: https://crates.io/crates/keymap-seq/0.1.0

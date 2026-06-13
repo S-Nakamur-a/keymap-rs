@@ -29,20 +29,84 @@
 //! # Ok::<(), keymap_suite::LoadError>(())
 //! ```
 //!
+//! The same example with inline TOML — compiles and runs as-is (tested in CI):
+//!
+//! ```
+//! use keymap_suite::prelude::*;
+//!
+//! #[derive(Clone, Debug, PartialEq)]
+//! enum Action { Save, CommandPalette, OpenFile }
+//!
+//! fn resolve(name: &str) -> Option<Action> {
+//!     match name {
+//!         "save"            => Some(Action::Save),
+//!         "command_palette" => Some(Action::CommandPalette),
+//!         "open_file"       => Some(Action::OpenFile),
+//!         _ => None,
+//!     }
+//! }
+//!
+//! const SETTINGS: &str = r#"
+//! [keys]
+//! "ctrl+s" = "save"
+//! "ctrl+p" = "command_palette"
+//!
+//! [layers.panel]
+//! "ctrl+p" = "open_file"
+//!
+//! [[sequences]]
+//! keys   = ["ctrl+x", "ctrl+s"]
+//! action = "save"
+//! "#;
+//!
+//! let loaded = keymap_suite::from_toml_str(SETTINGS, resolve)?;
+//!
+//! // Assemble the active chain from your application state (not the library's).
+//! let panel_focused = true;
+//! let chain: Vec<&Keymap<Action>> = if panel_focused {
+//!     vec![&loaded.layers["panel"], loaded.global()]
+//! } else {
+//!     vec![loaded.global()]
+//! };
+//! let key = chords::ctrl('p');
+//! if let Some(action) = resolve_layered(chain.iter().copied(), &key) {
+//!     assert_eq!(action, &Action::OpenFile); // panel wins
+//! }
+//!
+//! // Multi-key sequence: feed keys one at a time.
+//! let mut pending = loaded.pending_sequence();
+//! let cx = chords::ctrl('x');
+//! let cs = chords::ctrl('s');
+//! let step1 = pending.feed(&loaded.sequences, cx);
+//! assert!(matches!(step1, Step::Pending));
+//! let step2 = pending.feed(&loaded.sequences, cs);
+//! assert!(matches!(step2, Step::Fired(_)));
+//!
+//! # Ok::<(), keymap_suite::BuildError>(())
+//! ```
+//!
 //! ## What is in the suite, and what is not
 //!
 //! - **In**: the TOML loader, layered resolution, the multi-key sequence buffer
-//!   (`PendingSequence` / `Step`), the canonical key vocabulary (`Key`,
-//!   `KeyInput`, `Modifiers`), terse chord constructors ([`chords`]), reverse
-//!   lookup for help screens ([`keys_for_action`]), the warnings the loader
-//!   collects, and a `prelude` that pulls them in with one `use`. The optional
-//!   `crossterm` feature adds the
+//!   (`PendingSequence` / `Step`, and the timeout-aware `TimedPending` /
+//!   `TimedStep`), the canonical key vocabulary (`Key`, `KeyInput`, `Modifiers`),
+//!   terse chord constructors ([`chords`]), reverse lookup for help screens
+//!   ([`keys_for_action`]), the warnings the loader collects (with category tags
+//!   via [`WarningKind`]), and a `prelude` that pulls them in with one `use`. The
+//!   optional `crossterm` feature adds the
 //!   `KeyInput::try_from(crossterm::event::KeyEvent)` adapter.
+//! - **Also reachable from root** (not in prelude — more specialised):
+//!   [`CommandIndex`] for command-palette prefix lookup;
+//!   [`validate_rebind`] / [`RebindVerdict`] / [`BreakReason`] / [`LegacyForm`]
+//!   for opt-in rebind safety checks; [`merge`] / [`Merged`] / [`MergeNote`] for
+//!   layering a user config over defaults; [`to_toml_layered_with_unbinds`] for
+//!   round-tripping configs that include tombstone (`= false`) entries;
+//!   [`legacy_lints`] / [`LegacyLint`] for the static terminal-survivability
+//!   diagnostic pass (opt-in, not per-event).
 //! - **Out (on purpose)**: PTY byte decoding lives in `keymap-term`, not here;
-//!   the static legacy-survivability lint lives in `keymap-core::legacy_lints`
-//!   and stays opt-in; runtime state (the active layer chain, the inter-key
-//!   timer driving `PendingSequence::flush`) stays with the caller, exactly as
-//!   the rest of `keymap-rs` is designed.
+//!   runtime state (the active layer chain, the inter-key timer driving
+//!   `PendingSequence::flush`) stays with the caller, exactly as the rest of
+//!   `keymap-rs` is designed.
 //!
 //! ## crossterm
 //!
@@ -110,12 +174,27 @@ use std::path::Path;
 
 pub use keymap_core::{Key, KeyInput, Modifiers, ParseKeyInputError};
 pub use keymap_core::{Keymap, resolve_layered};
+// Opt-in rebind validation. `LegacyForm` is included because `RebindVerdict::Allowed`
+// carries it — callers matching on the verdict need the type without reaching past
+// the facade into `keymap-core`.
+pub use keymap_core::{BreakReason, LegacyForm, RebindVerdict, validate_rebind};
+// Opt-in terminal-survivability lint. Root re-export only (not prelude) — this is
+// a diagnostic pass, not a per-event operation. Exposing it here closes the gap
+// that previously forced a direct `keymap-core` dependency just for this function.
+pub use keymap_core::{LegacyLint, legacy_lints};
+// Command-palette prefix-completion index. Not in prelude — root re-export only
+// (prelude membership deferred until showcase demonstrates mainstream use).
+pub use keymap_core::cmd::CommandIndex;
 
-pub use keymap_config::{BuildError, GLOBAL_LAYER, Warning};
-pub use keymap_config::{to_toml, to_toml_layered};
+pub use keymap_config::{BuildError, GLOBAL_LAYER, Warning, WarningKind};
+pub use keymap_config::{to_toml, to_toml_layered, to_toml_layered_with_unbinds};
+// Overlay-merge API. Not in prelude — advanced multi-config composition.
+pub use keymap_config::{MergeNote, Merged, merge};
 
 pub use keymap_seq::{Continuation, Match, SeqBindError, SequenceKeymap};
 pub use keymap_seq::{PendingSequence, Step};
+// Timeout-aware sequence buffer (the inter-key timer wrapper for PendingSequence).
+pub use keymap_seq::{TimedPending, TimedStep};
 
 // The crossterm adapter (`TryFrom<KeyEvent> for KeyInput`) lives in
 // `keymap-core` behind its own `crossterm` feature; the impl is on the same
@@ -418,9 +497,14 @@ pub mod prelude {
     // Tables and resolution — single-chord lookup with layered context.
     pub use crate::{Keymap, resolve_layered};
     // Sequence resolution — multi-key sequences (`ctrl+x ctrl+s`, leader keys).
+    // `TimedPending`/`TimedStep` are the timeout-aware wrappers for callers who
+    // need an inter-key timer; `PendingSequence`/`Step` remain for callers who
+    // drive the timer themselves.
     pub use crate::{Match, PendingSequence, SequenceKeymap, Step};
-    // Configuration result and its helpers.
-    pub use crate::{Loaded, LoadedExt, Warning};
+    pub use crate::{TimedPending, TimedStep};
+    // Configuration result and its helpers. `WarningKind` gives callers a
+    // category tag without pattern-matching on the full Warning variant.
+    pub use crate::{Loaded, LoadedExt, Warning, WarningKind};
     // Discovery — the reverse of resolution, for help screens / which-key menus.
     pub use crate::keys_for_action;
     // Errors.
@@ -604,6 +688,138 @@ mod tests {
         // normalization. `key('a')` is bare, with no Shift to fold.
         assert_eq!(key('a'), KeyInput::new(Key::Char('a'), Modifiers::NONE));
         assert_ne!(ctrl('s'), KeyInput::new(Key::Char('s'), Modifiers::NONE));
+    }
+
+    // ─── S1-S5 re-export smoke tests ─────────────────────────────────────────
+    //
+    // Each test reaches the new API exclusively through `keymap_suite` names to
+    // confirm the facade wires everything up. Correctness is tested in the source
+    // crates; here we just check that the types and functions are accessible.
+
+    #[test]
+    fn command_index_is_reachable_from_suite_root() {
+        // `CommandIndex` is root-only (not in prelude by design); reached via
+        // `super::CommandIndex` which mirrors `keymap_suite::CommandIndex` for
+        // consumers of the published crate.
+        let mut index: CommandIndex<Action> = CommandIndex::new();
+        index.bind("quit", Action::Quit);
+        index.bind("save", Action::Save);
+
+        assert_eq!(index.get("quit"), Some(&Action::Quit));
+        assert_eq!(index.get("nope"), None);
+
+        let completions: Vec<&str> = index.complete("s").map(|(name, _)| name).collect();
+        assert_eq!(completions, ["save"]);
+    }
+
+    #[test]
+    fn timed_pending_is_reachable_from_suite_prelude() {
+        use crate::prelude::*;
+        use std::time::{Duration, Instant};
+
+        let loaded = from_toml_str(
+            "[[sequences]]\nkeys = [\"g\", \"g\"]\naction = \"quit\"\n",
+            resolve,
+        )
+        .expect("valid TOML");
+
+        let mut pending = TimedPending::new();
+        let now = Instant::now();
+        let window = Duration::from_millis(500);
+        let g = KeyInput::new(Key::Char('g'), Modifiers::NONE);
+
+        // First `g` press: enters a prefix.
+        let step = pending.feed(&loaded.sequences, g, now, window);
+        assert!(step.expired.is_none(), "no expiry on first press");
+        // (step.step is Prefix or Passthrough depending on map; just checking it doesn't panic)
+        let _ = step.step;
+    }
+
+    #[test]
+    fn validate_rebind_is_reachable_from_suite_root() {
+        let mut layer: Keymap<Action> = Keymap::new();
+        layer.bind(KeyInput::new(Key::Char('q'), Modifiers::CTRL), Action::Quit);
+        let layers = [&layer];
+        let proposed = KeyInput::new(Key::Char('s'), Modifiers::CTRL);
+        let reserved = [KeyInput::new(Key::Char('q'), Modifiers::CTRL)];
+
+        // `ctrl+s` is not reserved — should be Allowed.
+        let verdict = validate_rebind(&layers, 0, proposed, &reserved);
+        assert!(
+            matches!(verdict, RebindVerdict::Allowed { .. }),
+            "ctrl+s is not reserved: {verdict:?}"
+        );
+
+        // `ctrl+q` is reserved — should break.
+        let verdict = validate_rebind(&layers, 0, reserved[0], &reserved);
+        assert!(
+            matches!(
+                verdict,
+                RebindVerdict::BreaksReserved {
+                    reason: BreakReason::DirectSteal,
+                    ..
+                }
+            ),
+            "ctrl+q is reserved: {verdict:?}"
+        );
+    }
+
+    #[test]
+    fn merge_is_reachable_from_suite_root() {
+        let base = from_toml_str("[keys]\n\"ctrl+s\" = \"save\"\n", resolve).unwrap();
+        let overlay = from_toml_str("[keys]\n\"ctrl+s\" = \"quit\"\n", resolve).unwrap();
+        let merged = merge(base, overlay);
+
+        let ctrl_s = KeyInput::new(Key::Char('s'), Modifiers::CTRL);
+        assert_eq!(merged.output.global().get(&ctrl_s), Some(&Action::Quit));
+        assert!(
+            merged
+                .notes
+                .iter()
+                .any(|n| matches!(n, MergeNote::Overrode { .. }))
+        );
+    }
+
+    #[test]
+    fn warning_kind_is_reachable_from_suite_prelude() {
+        use crate::prelude::*;
+
+        let toml = "[keys]\n\"ctrl+z\" = \"unknown_action\"\n";
+        let loaded = from_toml_str(toml, resolve).unwrap();
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(loaded.warnings[0].kind(), WarningKind::UnknownAction);
+    }
+
+    #[test]
+    fn loaded_unbinds_field_is_visible_via_suite() {
+        // `BuildOutput::unbinds` was added in S4; `Loaded` is a type alias for
+        // `BuildOutput` so the field is automatically accessible — this test pins it.
+        let toml = "[keys]\n\"ctrl+s\" = false\n";
+        let loaded = from_toml_str(toml, resolve).unwrap();
+        assert!(
+            !loaded.unbinds.is_empty(),
+            "unbinds field visible through Loaded alias"
+        );
+    }
+
+    #[test]
+    fn legacy_lints_is_reachable_from_suite_root() {
+        // `legacy_lints` and `LegacyLint` are root-only (not in prelude —
+        // opt-in diagnostic, not a per-event operation). Verify the re-export
+        // is wired correctly and the function runs without requiring a direct
+        // `keymap-core` dependency.
+        let toml = "[keys]\n\"ctrl+s\" = \"save\"\n";
+        let loaded = from_toml_str(toml, resolve).unwrap();
+        let global = loaded.global();
+
+        // `legacy_lints` returns a Vec<LegacyLint> — verify it does not panic
+        // and the result is of the right type.
+        let lints: Vec<LegacyLint> = legacy_lints(global);
+        // ctrl+s is a safe chord (C0 representable); expect no lints for it.
+        assert!(
+            lints.is_empty(),
+            "ctrl+s alone should produce no legacy lints: {lints:?}"
+        );
     }
 
     #[cfg(feature = "crossterm")]
