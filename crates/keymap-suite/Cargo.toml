@@ -16,9 +16,9 @@ categories.workspace = true
 readme = "README.md"
 
 [dependencies]
-keymap-core = { path = "../keymap-core", version = "0.1.0" }
-keymap-config = { path = "../keymap-config", version = "0.1.0" }
-keymap-seq = { path = "../keymap-seq", version = "0.1.0" }
+keymap-core = { path = "../keymap-core", version = "0.1.1" }
+keymap-config = { path = "../keymap-config", version = "0.1.1" }
+keymap-seq = { path = "../keymap-seq", version = "0.1.1" }
 
 [features]
 # `default` pulls in no terminal backend: the facade stays backend-neutral, so a
